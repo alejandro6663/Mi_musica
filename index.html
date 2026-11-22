@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#080d1c">
+  <meta name="description" content="Organiza tu colección musical y explora una demo visual con vinilos.">
+  <title>Mi Música</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="192x192" href="iconos/mi-musica-192.png">
+  <link rel="stylesheet" href="estilos.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap top-inner">
+      <a class="brand" href="#inicio" aria-label="Mi Música, Inicio"><span class="brand-icon" data-icon="wave"></span>Mi<span>Música</span></a>
+      <span class="version"><i></i> Prototipo v1.1</span>
+    </div>
+  </header>
+  <main class="wrap" id="contenido"></main>
+  <footer class="dock">
+    <div class="wrap player">
+      <div class="playing-track">
+        <div id="mini-disc"></div>
+        <div class="now"><strong id="track-title"></strong><span>Demo visual · Sin audio</span></div>
+      </div>
+      <div class="progress">
+        <span id="elapsed" aria-hidden="true">0:00</span>
+        <input id="timeline" type="range" min="0" max="1" value="0" aria-label="Progreso de la demo visual">
+        <span id="duration" aria-hidden="true"></span>
+      </div>
+      <div class="transport">
+        <button class="play" id="play" aria-label="Iniciar demo visual"></button>
+        <button class="icon-button" id="next" data-icon="next" aria-label="Siguiente canción"></button>
+      </div>
+    </div>
+    <nav class="wrap tabs" aria-label="Navegación principal">
+      <a href="#inicio" data-page="inicio"><span data-icon="home"></span>Inicio</a>
+      <a href="#buscar" data-page="buscar"><span data-icon="search"></span>Buscar</a>
+      <a href="#biblioteca" data-page="biblioteca"><span data-icon="library"></span>Biblioteca</a>
+      <a href="#dj" data-page="dj"><span data-icon="headphones"></span>DJ personal</a>
+    </nav>
+  </footer>
+  <dialog id="dialog" aria-labelledby="dialog-title">
+    <form id="dialog-form">
+      <div class="dialog-head">
+        <h2 id="dialog-title"></h2>
+        <button type="button" class="icon-button" data-action="close" data-icon="close" aria-label="Cerrar"></button>
+      </div>
+      <div id="dialog-fields"></div>
+      <div class="dialog-buttons">
+        <button type="button" class="secondary" data-action="close">Cancelar</button>
+        <button type="submit" class="primary" id="dialog-submit">Guardar</button>
+      </div>
+    </form>
+  </dialog>
+  <div id="status" class="toast" role="status"></div>
+</body>
+</html>

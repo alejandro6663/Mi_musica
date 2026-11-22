@@ -1,0 +1,16 @@
+{
+  "name": "Mi Música",
+  "short_name": "Mi Música",
+  "description": "Biblioteca musical con una demostración visual de vinilos.",
+  "lang": "es",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#080d1c",
+  "theme_color": "#080d1c",
+  "icons": [
+    { "src": "iconos/mi-musica-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "iconos/mi-musica-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "iconos/mi-musica-512-adaptable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
