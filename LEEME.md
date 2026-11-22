@@ -1,55 +1,48 @@
-# Mi Música 1.2
+# Mi Música 1.3 · Versión de prueba
 
-Actualización de la PWA Mi Música 1.1. Las canciones importadas se reproducen desde IndexedDB y los cuatro vinilos de muestra de la versión anterior se identifican como demos sin audio. El proyecto se aloja como archivos estáticos.
+La 1.3 parte de la 1.2 y conserva la biblioteca local, los favoritos, las carpetas, el reproductor con vinilos y las preferencias existentes. Los enlaces de Spotify se importan en una vista específica de playlists. Buscar mantiene los catálogos existentes y añade reproducción dentro de Mi Música para las pistas autorizadas por Audius.
 
-## Probar en local
+## Probar sin tocar la versión publicada
 
-1. Extrae el ZIP y abre una terminal en la carpeta con `index.html`.
-2. Con Python 3, ejecuta `python -m http.server 8000 --bind 127.0.0.1` y abre `http://127.0.0.1:8000/` en Chrome. Para instalar en otro equipo o en Android usa el origen HTTPS publicado. Abre siempre la misma dirección y puerto para recuperar tus datos de prueba.
-3. En **Biblioteca → Importar música**, selecciona archivos propios. El navegador verifica cada archivo antes de incorporarlo. La compatibilidad de MP3, WAV, AAC/M4A, FLAC, Ogg/Opus y WebM depende del códec y del dispositivo. Se usan etiquetas ID3v2 compatibles en MP3 y, en su ausencia, se intenta deducir artista y título de `Artista - Título.ext`. El menú de la canción permite editar título, artista y álbum.
-4. Toca el título del minirreproductor o deslízalo hacia arriba para ampliar. Desliza hacia abajo desde el encabezado o el vinilo grande para minimizar. Pulsa **Anterior** desde una posición avanzada para volver al comienzo y púlsalo otra vez para volver a la pista previa.
-5. Mantén pulsado un vinilo o usa su botón de opciones para añadir a **Me gusta** y a carpetas. Desliza canciones a la derecha para ponerlas a continuación o a la izquierda para quitarlas de la cola. En el reproductor completo, mantén presionado el asidero ⠿ de una fila y arrástrala. Los botones **Subir**, **Bajar** y **Quitar de la cola** son alternativas al gesto.
-6. Para comprobar el uso sin red, espera a que el service worker quede activo en las herramientas de desarrollo, importa una pista y abre nuevamente la app con la red desconectada. La biblioteca y el audio local siguen disponibles.
+1. Extrae el ZIP. Abre una terminal en la carpeta que contiene `index.html`.
+2. Con Python 3, ejecuta `python -m http.server 8000 --bind 127.0.0.1`.
+3. En Chrome abre `http://127.0.0.1:8000/`. Para simular un teléfono, usa la barra de dispositivos de las herramientas de desarrollo.
+4. Para instalar o probar OAuth en un Android real, usa un entorno de pruebas HTTPS bajo tu control y su propia URL de retorno. `127.0.0.1` en el teléfono se refiere al propio teléfono.
+5. Tras la primera carga y activación del service worker, importa una pista local, desactiva la red y vuelve a abrir la aplicación. El audio local se lee desde IndexedDB.
 
-## Datos y copias de seguridad
+## Spotify y permisos
 
-- Al importar, la app crea una copia local sin tocar el archivo de origen. El identificador SHA‑256 evita duplicar el mismo archivo, aunque cambie su nombre o aparezca en varias carpetas.
-- **Biblioteca → Almacenamiento y respaldo** muestra el tamaño de la música, la estimación de datos y caché y la cuota que informa el navegador. Puedes solicitar persistencia, que el navegador puede conceder o denegar.
-- Exporta un archivo `.mimusica` para conservar audio, carpetas, favoritos, cola, ajustes y posición. Al restaurar, se valida el contenido del archivo, se añaden los audios ausentes y se conservan carpetas en conflicto como copias. La restauración recupera las preferencias del respaldo y los favoritos se combinan. El respaldo contiene los audios, así que guárdalo en un lugar privado.
-- El audio y los datos residen en el origen web del navegador. Borrar datos del sitio, cambiar de navegador o cambiar de origen requiere restaurar un respaldo para recuperar esos datos. Al abrir normalmente, la última pista y posición se recuperan en pausa.
+1. Registra o selecciona una aplicación en [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) y habilita **Web API**. En modo de desarrollo, el titular debe mantener Spotify Premium activo y autorizar las cuentas de prueba. Spotify indica un máximo de cinco usuarios para aplicaciones nuevas en ese modo.
+2. En `spotify-config.js`, reemplaza el valor vacío por el **Client ID público**. PKCE usa un verificador aleatorio y un desafío S256. Las credenciales de sesión se guardan en `sessionStorage` y quedan fuera del código, los respaldos y Firebase. Mantén cualquier Client Secret, clave privada o token fuera del repositorio y del navegador.
+3. Añade en Redirect URIs la URL exacta de la carpeta donde se sirve la app. Para la prueba anterior usa `http://127.0.0.1:8000/`. En un subdirectorio usa, por ejemplo, `https://tu-dominio-de-prueba.example/mi-musica/`. Incluye la barra final. Spotify exige HTTPS salvo direcciones loopback explícitas, y rechaza el alias `localhost`. Tras editar `spotify-config.js`, cambia la versión de caché en `sw.js` para que un cliente con una instalación previa lea la configuración nueva.
+4. Abre **Biblioteca → Importar playlist de Spotify**. Pega el enlace completo de `open.spotify.com` o una URI `spotify:playlist:…`. Autoriza lectura de playlists privadas y colaborativas y la identificación de la cuenta. Vuelve a la misma pestaña donde se inició el flujo.
+5. Prueba primero una playlist propia y luego una colaborativa o ajena. En desarrollo, Spotify limita el contenido de playlists a las que la cuenta posee o en las que colabora. El servidor puede responder 403 o 404 para otras listas. Las pistas locales de Spotify, entradas eliminadas y episodios se omiten. La importación conserva el orden y las repeticiones del listado.
 
-## Activar Google y sincronización
+Títulos, artistas, álbumes, duración, enlaces y portadas provienen de la API de Spotify. Las portadas conservan su encuadre y van acompañadas del logotipo y un enlace oficial. La copia local de metadatos dura hasta 24 horas y se vuelve a consultar con **Importar y actualizar**. Las copias de la cuenta se retiran del dispositivo al desconectar. La revocación global del acceso se gestiona desde la cuenta de Spotify.
 
-La entrega deja Firebase desactivado hasta que el propietario configure su proyecto. La biblioteca local funciona con esa configuración.
+**La reproducción de Spotify se abre en Spotify.** El Web Playback SDK requiere que la cuenta que escucha tenga Spotify Premium y que el uso cumpla las condiciones de Spotify. Esta versión mantiene su importador de metadatos separado del catálogo y el reproductor de Audius. La API puede indicar una vista previa de Spotify, pero su disponibilidad depende del catálogo. Esta versión utiliza el enlace oficial para escucharla.
 
-1. Registra una aplicación web en tu proyecto de Firebase y copia su **configuración pública de cliente** en `cloud-config.js`, sustituyendo `null`. Usa los valores que genera Firebase. Guarda las credenciales de servicio y las claves privadas fuera del repositorio.
-2. En **Authentication → Sign-in method**, habilita **Google**, selecciona el correo de asistencia y añade el hostname real de GitHub Pages a **Authorized domains**, sin ruta. Añade `localhost` solo si lo necesitas para pruebas.
-3. Crea una base **Cloud Firestore** en modo producción. Aplica `firestore.rules` desde la consola. Si el proyecto comparte Firestore con otras apps, integra únicamente el bloque correspondiente y verifica que ninguna regla más amplia permita acceder a `users/{uid}/miMusica/library`.
-4. Incrementa la versión de caché de `sw.js` al publicar la configuración. Abre **Cuenta → Iniciar sesión con Google → Sincronizar esta biblioteca**. Si Chrome bloquea la ventana emergente en la PWA, abre el mismo enlace en una pestaña normal de Chrome e inicia sesión allí.
-5. Para la validación final, usa dos dispositivos con la misma cuenta. Edita datos sin conexión y reconecta. Los cambios independientes se combinan y los cambios incompatibles aparecen en **Cuenta** para resolverlos. Usa una segunda cuenta de prueba para verificar que Firestore deniegue acceso al documento del primer UID.
+[Guía de restricciones de desarrollo](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide) · [Flujo PKCE](https://developer.spotify.com/documentation/web-api/tutorials/code-pkce-flow) · [URI de retorno](https://developer.spotify.com/documentation/web-api/concepts/redirect_uri) · [Política de Spotify](https://developer.spotify.com/policy) · [Atribución y logotipos](https://developer.spotify.com/documentation/design) · [Web Playback SDK](https://developer.spotify.com/documentation/web-playback-sdk/tutorials/getting-started)
 
-La cola, las carpetas, los favoritos y los ajustes sincronizables usan una revisión común almacenada para cada cuenta. La posición, el temporizador y los archivos de audio quedan en el dispositivo. En el segundo dispositivo importa los mismos archivos para resolver las referencias de pistas locales. La sincronización está acotada a un documento por cuenta; una biblioteca de metadatos que supere su tamaño permitido sigue disponible en local y se puede respaldar.
+## Buscar y reproducir
 
-[Google en Firebase Authentication](https://firebase.google.com/docs/auth/web/google-signin) · [Reglas de Firestore](https://firebase.google.com/docs/firestore/security/rules-conditions) · [Transacciones de Firestore](https://firebase.google.com/docs/firestore/manage-data/transactions)
+- En **Buscar**, escribe el título, el artista o ambos. La búsqueda local funciona sin red. Los catálogos externos son Audius e iTunes Store. **Comparar** mantiene la distinción entre grabación confirmada por ISRC, coincidencia de metadatos, versiones alternativas y resultados no confirmados.
+- **Canción encontrada** indica que hay un enlace oficial. **Vista previa disponible** aparece para una muestra que entrega la API de Audius. **Reproducción completa disponible** se muestra cuando Audius indica que la pista es pública, está disponible, se puede transmitir y carece de restricciones de acceso. Con esos permisos puedes reproducirla o agregarla a la cola en línea. Si la transmisión falla, queda el enlace a Audius.
+- El reproductor completo incluye volumen, progreso, anterior, pausa y siguiente. Durante una reproducción de Audius aparece **Volver a mi cola local**. La transición conserva la selección y la posición local en pausa. El audio de Audius requiere conexión y se transmite por su integración oficial.
+- La salida de audio la selecciona el sistema. Para usar Bluetooth, conecta el dispositivo y selecciónalo en Windows o Android. Si el sistema controla el volumen, usa también sus botones físicos. En navegadores compatibles, Media Session anuncia el título y habilita los controles multimedia del sistema. Si Chrome bloquea el inicio automático, pulsa **Reproducir**.
 
-## Buscar y comparar
+[API oficial de Audius](https://docs.audius.co/api/) · [Media Session API](https://developer.mozilla.org/en-US/docs/Web/API/Media_Session_API)
 
-**Buscar** consulta el catálogo local y, si está marcada la opción en línea, Audius e iTunes Store. El país de iTunes se puede modificar. iTunes permite consultar por álbum y Audius aporta portadas cuando las devuelve; las imágenes promocionales de iTunes se reservan para una integración que cumpla sus condiciones de uso. Cada resultado abre su enlace oficial.
+## Recuperar «Motivación»
 
-**Comparar** consulta el segundo catálogo con el título y artista. Un ISRC compartido identifica una coincidencia exacta. Título, artista, álbum y duración congruentes solo confirman la coincidencia de metadatos. Los cambios reconocibles de versión se indican por separado y el resto se muestra como no confirmado. Una búsqueda vacía no demuestra que la canción esté ausente. La comparación se limita a los proveedores y regiones consultados.
+En la 1.2, cuando existía una biblioteca bajo `mi-musica-v2`, la app cargaba esa biblioteca y dejaba de consultar `mi-musica-v1`. Si «Motivación» existía solo en la última copia 1.1, podía quedar fuera de la vista. También pueden existir bibliotecas diferentes según el origen, el perfil del navegador o el dispositivo. La causa en tus datos reales requiere revisar el origen donde se creó la carpeta o un respaldo de ese origen.
 
-Spotify, Apple Music y YouTube quedan pendientes de una integración autorizada. Spotify exige autorización para su API. Apple Music API exige un token de desarrollador firmado y su gestión debe quedar fuera del cliente público. Los proveedores se pueden añadir a `catalog.js` usando el mismo modelo de metadatos y enlaces.
+1. Haz primero un respaldo de tu biblioteca actual mediante **Biblioteca → Almacenamiento y respaldo → Exportar respaldo**.
+2. Si la 1.3 puede acceder a los datos del origen antiguo, abre **Recuperar carpetas antiguas**. Busca «Motivación», márcala y pulsa **Recuperar selección**. La herramienta examina la biblioteca anterior y las copias locales de sincronización disponibles. Si una carpeta comparte ID con otra que tiene cambios distintos, se conserva como copia.
+3. Si la 1.3 está en otro origen de pruebas, restaura un respaldo `.mimusica`. Si la 1.1 sigue accesible en Chrome en el dispositivo original, puedes copiar el valor de `mi-musica-v1` desde **DevTools → Application → Local Storage → origen original** a un archivo `.json` e importarlo en **Restaurar respaldo**. El archivo JSON permite recuperar carpetas.
+4. La 1.3 mantiene `mi-musica-v2` como biblioteca activa y conserva `mi-musica-v1`. El respaldo `.mimusica` incluye audio local y preferencias; conserva las carpetas locales y crea copias al detectar colisiones. Los archivos de música originales quedan en su ubicación.
 
-[API de Audius](https://docs.audius.co/api/) · [API de búsqueda de iTunes Store](https://performance-partners.apple.com/search-api) · [Búsqueda de Spotify](https://developer.spotify.com/documentation/web-api/reference/search) · [Tokens de Apple Music](https://developer.apple.com/documentation/applemusicapi/generating-developer-tokens)
+## Actualizar más adelante
 
-## Actualizar GitHub Pages sin perder los datos
-
-1. Identifica la rama y la carpeta que publica el repositorio existente. Crea una rama o una etiqueta de respaldo a partir de la versión desplegada. Mantén disponible el ZIP de la 1.1.
-2. Copia los archivos web de esta entrega a la **misma carpeta publicada**. Conserva el hostname, la ruta, el nombre del manifiesto y la ruta de `sw.js`. Las reglas de Firestore se aplican en su consola; no se necesita un servidor para servir los archivos de la PWA.
-3. Confirma que los recursos nuevos responden desde la misma subruta y que el sitio conserva HTTPS. Súbelos juntos en una sola actualización. El nuevo service worker precarga los recursos y espera a que se cierren las ventanas que usan la versión anterior.
-4. Cierra todas las ventanas de Mi Música y vuelve a abrir la PWA. Verifica que figure **Versión 1.2**. La app lee las carpetas y la última selección de `mi-musica-v1` y persiste la nueva estructura en `mi-musica-v2`. Conserva la clave anterior. Evita borrar datos del sitio para forzar la actualización.
-5. En un Android real, abre el mismo enlace en Chrome y prueba **⋮ → Instalar y crear acceso directo → Instalar**. Si ya estaba instalada, prueba la actualización desde el ícono original. Comprueba los gestos táctiles, la reproducción sin conexión y el acceso con una cuenta de prueba si Firebase está habilitado.
-6. Si necesitas volver a la 1.1, restaura la rama o los archivos anteriores y publica una versión de caché distinta. Exporta primero cualquier biblioteca 1.2 que necesites conservar. La 1.1 puede leer sus datos anteriores; las canciones importadas son una función de la 1.2 y requieren volver a usar esa versión.
-
-[GitHub Pages](https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site) · [Instalación en Chrome para Android](https://support.google.com/chrome/answer/9658361?co=GENIE.Platform%3DAndroid&hl=es-419)
+Conserva el ZIP de la 1.2 y respalda el repositorio desplegado antes de publicar. Mantén el mismo hostname, ruta, manifiesto y archivo del service worker para conservar instalación y datos. Conserva el `cloud-config.js` de producción si ya configuraste Firebase. Despliega los archivos juntos y cierra las ventanas anteriores para que se active la caché nueva. Comprueba primero la recuperación y las funciones en un origen de prueba. La entrega deja GitHub Pages y la versión 1.2 publicada intactos.
 

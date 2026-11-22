@@ -1,17 +1,15 @@
-# Verificación de Mi Música 1.2
+# Pruebas de Mi Música 1.3
 
-Las pruebas de navegador se realizaron en Chromium de escritorio, con un servidor en localhost y la PWA alojada bajo una subruta. Para las pruebas de interfaz móvil se emularon anchos de 360 y 390 píxeles.
-
-| Fase | Pruebas realizadas |
+| Prueba | Resultado |
 | --- | --- |
-| Audio y almacenamiento | Importación y reproducción de dos WAV de 12 s y un MP3 sintético de 4 s. Lectura de título, artista y álbum ID3v2. Reimportación del mismo WAV y detección de duplicado. Consulta de almacenamiento, exportación y restauración de un respaldo de prueba con audio y carpeta. |
-| Reproductor y biblioteca | Pausa, avance al siguiente, control de posición y comportamiento en dos pulsaciones de Anterior. Menú de opciones, almacenamiento de favoritos, envío de una pista a continuación, selección de repetición, aleatorio y programación del temporizador. Apertura y cierre del reproductor y envío a la cola por deslizamiento en vista móvil. |
-| Cuenta y sincronización | Vista local con Firebase desactivado. Pruebas automatizadas de fusión de cambios independientes, conflictos de edición, borrado contra edición y elección explícita de precedencia. |
-| Catálogos | Consulta real de Audius e iTunes Store y comparación de un resultado con enlaces oficiales. Pruebas automatizadas para ISRC, coincidencia por metadatos, versiones alternativas y resultados no confirmados. |
-| Migración y desconexión | Actualización de una 1.1 original a la 1.2 en la misma URL. Se conservaron una carpeta, su canción y el orden por fecha. Tras restaurar un respaldo y detener el servidor, la app abrió en pausa en 0:04, avanzó con audio al reproducir y permitió buscar en la biblioteca local. Se verificaron los recursos relativos, el manifiesto y la sintaxis de JavaScript. |
+| Recuperación de una biblioteca anterior | En Chromium se inició con dos claves de prueba. «Motivación» estaba solo en `mi-musica-v1`; la biblioteca activa contenía otra carpeta. Se recuperó «Motivación» con su canción y la carpeta actual siguió visible tras recargar. La prueba automatizada también verificó la copia en caso de ID en conflicto y la ausencia de duplicados al repetir la recuperación. |
+| Búsqueda externa | Se obtuvieron resultados reales de Audius e iTunes Store. Los resultados de iTunes mostraron enlaces y las pistas aptas de Audius mostraron el botón de reproducción. |
+| Audio en línea | Se reprodujo una pista pública de Audius y se comprobó que avanzó el tiempo real de audio. El reproductor completo mostró su origen y permitió volver a la cola local. Las pruebas automatizadas cubrieron acceso completo, vista previa informada y pistas con acceso no autorizado. |
+| Reproducción sin conexión | Se importó un WAV de 12 segundos. Con el servidor detenido, la PWA volvió a abrir y reprodujo el WAV desde IndexedDB. El audio continuó al cambiar de pantalla. |
+| Adaptación y volumen | Se revisaron los controles a 1280 píxeles en escritorio y a 360 y 390 píxeles en pantallas móviles emuladas. Se cambió el volumen y se comprobó que el valor se recuperó al volver a abrir el reproductor. |
+| Media Session | Prueba automatizada de registro de acciones, metadatos, estado y posición mediante una sesión de prueba. |
+| Spotify | La interfaz sin credenciales mostró el campo y el aviso de configuración, con el botón de importación inactivo. El logotipo oficial cargó desde el paquete. Pruebas automatizadas de PKCE/S256, rechazo por `state` incorrecto, limpieza del retorno OAuth, estilos de respuesta actual y anterior, paginación, rechazo de destinos ajenos, omisión de entradas no compatibles y control de acceso 403. |
+| Entrega estática | Se verificaron la sintaxis JavaScript, los recursos HTTP y las rutas bajo un subdirectorio. |
 
-## Verificaciones pendientes del propietario
-
-- En un Android físico, probar instalación o actualización desde el ícono, gestos táctiles y funcionamiento en modo avión.
-- Con un proyecto Firebase configurado, verificar inicio de sesión, reconexión de dos dispositivos y aislamiento por UID en Firestore. Las reglas y el cliente se entregan; la prueba con cuentas reales sigue pendiente.
+**Pendiente en dispositivos y cuentas reales**. Completar OAuth y una importación real con una aplicación registrada de Spotify, probar las portadas en una playlist autorizada y comprobar Android físico, Bluetooth y los controles de bloqueo del sistema. La comprobación de «Motivación» usó datos ficticios; no se inspeccionó el almacenamiento de la versión publicada.
 

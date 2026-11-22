@@ -22,6 +22,17 @@ const musicCatalog = (() => {
     } catch { return ""; }
   }
 
+  function audiusPlayback(track) {
+    const id = text(track.id);
+    if (!/^[A-Za-z0-9]{1,20}$/.test(id) || track.is_available !== true || track.is_unlisted === true) return null;
+    if (track.is_stream_gated === false && track.is_streamable === true && track.access?.stream === true
+      && !track.access_authorities?.length && !track.allowed_api_keys?.length) {
+      return { kind:"full", url:"https://api.audius.co/v1/tracks/" + id + "/stream?app_name=MiMusica" };
+    }
+    const preview = https(track.preview?.url);
+    return preview ? { kind:"preview", url:preview } : null;
+  }
+
   async function json(endpoint, params, signal) {
     const url = new URL(endpoint);
     url.search = new URLSearchParams(params);
@@ -53,6 +64,7 @@ const musicCatalog = (() => {
         album:text(track.album_backlink?.playlist_name ?? track.album_backlink?.title),
         seconds:Number(track.duration), isrc:text(track.isrc).toUpperCase(),
         image:https(track.artwork?.["150x150"]),
+        playback:audiusPlayback(track),
         url:typeof track.permalink === "string" && /^\/(?!\/)/.test(track.permalink)
           ? https(new URL(track.permalink, "https://audius.co").href, ["audius.co"]) : ""
       })).filter((track) => field === "any" || normalize(track[field]).includes(normalize(term)));
@@ -115,6 +127,6 @@ const musicCatalog = (() => {
     }));
   }
 
-  return { search, compare, identify, normalize, providerNames };
+  return { search, compare, identify, normalize, providerNames, audiusPlayback };
 })();
 

@@ -48,7 +48,8 @@ const audio = document.querySelector("#audio");
 const fullPlayer = document.querySelector("#full-player");
 const fullTimeline = document.querySelector("#full-timeline");
 const validColor = /^#[0-9a-f]{6}$/i;
-const pages = ["inicio", "buscar", "biblioteca", "dj"];
+const pages = ["inicio", "buscar", "biblioteca", "dj", "spotify"];
+let previousInvalidState;
 const state = loadState();
 let folderId = null;
 let query = "";
@@ -72,6 +73,17 @@ let libraryReady = false;
 let sleepTimer;
 let gesture;
 let gestureClick;
+let spotifyLists = [];
+let spotifySelected;
+let spotifyOffset = 0;
+let spotifyLink = "";
+let spotifyMessage = "";
+let spotifyBusy = false;
+let onlineTrack;
+let onlineQueue = [];
+let onlineOriginal = [];
+const onlineResults = new Map();
+const unavailableStreams = new Set();
 
 function validTrackId(id) {
   return typeof id === "string" && (demos.some((track) => track.id === id) || /^local:[0-9a-f]{64}$/.test(id));
@@ -92,13 +104,25 @@ function escapeText(value) {
 }
 
 function loadState() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(storageKey) ?? localStorage.getItem("mi-musica-v1"));
-    if (saved && Array.isArray(saved.folders)) return normalizedState(saved);
-  } catch {
-    // A blocked or invalid local store still allows the demo to run.
+  for (const key of [storageKey, "mi-musica-v1"]) {
+    let raw;
+    try {
+      raw = localStorage.getItem(key);
+      if (raw === null) continue;
+      const saved = JSON.parse(raw);
+      if (saved && Array.isArray(saved.folders)) return normalizedState(saved);
+    } catch { /* Try the previous local snapshot. */ }
+    if (key === storageKey && typeof raw === "string") previousInvalidState = raw;
   }
   return normalizedState(initialState);
+}
+
+function writeState(data) {
+  if (previousInvalidState !== undefined) {
+    localStorage.setItem(storageKey + ":copia-" + Date.now(), previousInvalidState);
+    previousInvalidState = undefined;
+  }
+  localStorage.setItem(storageKey, JSON.stringify(data));
 }
 
 function normalizedState(saved) {
@@ -113,6 +137,7 @@ function normalizedState(saved) {
     shuffle: saved.shuffle === true,
     repeat: ["off", "list", "one"].includes(saved.repeat) ? saved.repeat : "off",
     sleepUntil: Number.isFinite(saved.sleepUntil) ? Math.max(0, saved.sleepUntil) : 0,
+    volume: Number.isFinite(saved.volume) ? Math.min(1, Math.max(0, saved.volume)) : 1,
     folders: saved.folders.filter((folder) => folder && typeof folder.id === "string"
       && typeof folder.name === "string" && validColor.test(folder.color)
       && Number.isFinite(folder.created) && Array.isArray(folder.tracks)).map((folder) => ({
@@ -123,7 +148,7 @@ function normalizedState(saved) {
 
 function saveState(message, synchronize = true) {
   try {
-    localStorage.setItem(storageKey, JSON.stringify(state));
+    writeState(state);
     if (synchronize) cloudMusic.changed();
     if (message) notify(message);
   } catch {
@@ -133,8 +158,10 @@ function saveState(message, synchronize = true) {
 
 function notify(message) {
   status.textContent = message;
+  const playerNotice = document.querySelector("#full-message");
+  if (fullPlayer.open) playerNotice.textContent = message;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { status.textContent = ""; }, 4200);
+  toastTimer = setTimeout(() => { status.textContent = playerNotice.textContent = ""; }, 4200);
 }
 
 function page() {
@@ -143,7 +170,11 @@ function page() {
 }
 
 function selectedTrack() {
-  return tracks.find((track) => track.id === state.selectedTrack) ?? demos[0];
+  return onlineTrack ?? tracks.find((track) => track.id === state.selectedTrack) ?? demos[0];
+}
+
+function currentTrackId() {
+  return onlineTrack?.id ?? state.selectedTrack;
 }
 
 function sortedFolders() {
@@ -219,6 +250,7 @@ function library() {
     + '<button class="primary" type="button" data-action="new">' + icon("plus") + ' Nueva carpeta</button></div>';
   return heading("Biblioteca", "Importa canciones de este dispositivo y organízalas en tus carpetas.")
     + '<div class="tools"><button class="primary" data-action="import">' + icon("plus") + ' Importar música</button>'
+    + '<a class="secondary" href="#spotify">Importar playlist de Spotify</a>'
     + '<button class="secondary" data-action="favorites">Me gusta (' + state.favorites.length + ')</button>'
     + '<button class="secondary" data-action="storage">Almacenamiento y respaldo</button></div>'
     + section("Tus carpetas", folderGrid(sortedFolders()), tools)
@@ -242,6 +274,86 @@ function dj() {
   return heading("DJ personal", "Tu futuro asistente musical conversacional.")
     + '<section class="feature"><span>' + icon("headphones") + '</span><h2>Asistente en preparación</h2>'
     + '<p>Aquí podrás pedir sugerencias según tus gustos, tu estado de ánimo o lo que quieras escuchar.</p></section>';
+}
+
+function spotifyScreen() {
+  const configured = spotifyMusic.ready;
+  const connected = spotifyMusic.connected();
+  const freshLists = connected ? spotifyLists.filter((item) => Date.now() - item.savedAt < 86400000) : [];
+  const selected = freshLists.find((item) => item.id === spotifySelected);
+  const logo = '<img class="spotify-logo" src="iconos/spotify-blanco.svg" alt="Spotify">';
+  const button = (action, label, disabled = false) => '<button type="button" class="secondary" data-action="' + action
+    + '"' + (disabled ? ' disabled' : '') + '>' + label + '</button>';
+  const source = (url, text) => '<a class="secondary" href="' + escapeText(url)
+    + '" target="_blank" rel="noopener noreferrer">' + text + '</a>';
+  const pageSize = 20;
+  const body = !selected ? "" : '<div class="spotify-playlist section"><div class="section-head"><h2>'
+    + escapeText(selected.name) + '</h2>' + source(selected.url, "Abrir playlist en Spotify") + '</div><p>'
+    + selected.tracks.length + ' canciones importadas'
+    + (selected.omitted ? ' · ' + selected.omitted + ' omitidas por tipo o disponibilidad' : '')
+    + '</p><div class="external-grid section">'
+    + selected.tracks.slice(spotifyOffset, spotifyOffset + pageSize).map((track) => {
+      const art = track.cover
+        ? '<img class="spotify-art" src="' + escapeText(track.cover)
+          + '" width="56" height="56" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">'
+        : '<span class="external-art" aria-hidden="true">' + icon("wave") + '</span>';
+      return '<article class="external-card spotify-row">' + art + '<div><strong>' + escapeText(track.title)
+        + (track.explicit ? ' <abbr title="Contenido explícito" class="explicit-label">E</abbr>' : '')
+        + '</strong><p>' + escapeText([track.artist, track.album,
+          track.seconds === null ? "" : formatTime(track.seconds)].filter(Boolean).join(" · ")) + '</p>'
+        + '<small>' + (track.preview ? "Spotify informa una vista previa" : "Canción encontrada") + '</small></div>'
+        + '<div class="external-links">' + source(track.url,
+          'Abrir en <img class="spotify-row-logo" src="iconos/spotify-blanco.svg" alt="Spotify">') + '</div></article>';
+    }).join("") + '</div>' + (selected.tracks.length > pageSize ? '<div class="tools spotify-pages">'
+      + button("spotify-prev", "Anterior", spotifyOffset === 0) + '<span>' + (spotifyOffset + 1) + '–'
+      + Math.min(spotifyOffset + pageSize, selected.tracks.length) + ' de ' + selected.tracks.length + '</span>'
+      + button("spotify-next", "Siguiente", spotifyOffset + pageSize >= selected.tracks.length) + '</div>' : '') + '</div>';
+  return '<a class="text-button" href="#biblioteca">Volver a Biblioteca</a>'
+    + heading("Importar playlist de Spotify", "Consulta los metadatos de una playlist que tu cuenta pueda leer.")
+    + '<section class="feature spotify-feature">' + logo
+    + '<form id="spotify-form" class="spotify-form"><label class="form-label">Enlace de playlist'
+    + '<input class="field" id="spotify-link" name="playlist" type="text" inputmode="url" maxlength="360" required '
+    + 'placeholder="https://open.spotify.com/playlist/…" value="' + escapeText(spotifyLink) + '"></label>'
+    + '<div class="tools"><button type="submit" class="primary"' + (!configured || spotifyBusy ? ' disabled' : '') + '>'
+    + (connected ? "Importar y actualizar" : "Conectar e importar") + '</button>'
+    + (configured && !connected ? button("spotify-connect", "Conectar Spotify", spotifyBusy) : '')
+    + (connected ? button("spotify-disconnect", "Desconectar Spotify", spotifyBusy) : '') + '</div></form>'
+    + '<p class="spotify-status" role="status">' + escapeText(spotifyMessage || (!configured
+      ? "Configura el Client ID de Spotify para habilitar la importación."
+      : connected ? "Cuenta conectada. La copia de metadatos se conserva hasta 24 horas."
+        : "Se abrirá Spotify para autorizar la lectura de playlists.")) + '</p></section>'
+    + (freshLists.length ? section("Playlists importadas", '<div class="tools">' + freshLists.map((item) =>
+      '<button type="button" class="secondary" data-action="spotify-list" data-id="' + escapeText(item.id)
+      + '" aria-pressed="' + (item.id === spotifySelected) + '">' + escapeText(item.name) + '</button>').join("") + '</div>') : '')
+    + body;
+}
+
+async function loadSpotifyLists() {
+  spotifyLists = await spotifyMusic.list();
+  if (!spotifyLists.some((item) => item.id === spotifySelected)) spotifySelected = spotifyLists[0]?.id;
+  if (page() === "spotify") render();
+}
+
+async function spotifyOperation(run) {
+  if (spotifyBusy) return;
+  spotifyBusy = true;
+  spotifyMessage = "Consultando Spotify…";
+  if (page() === "spotify") render();
+  try { await run(); }
+  catch (error) {
+    spotifyMessage = error.name === "TimeoutError" ? "Spotify tardó demasiado en responder." : error.message;
+  } finally {
+    spotifyBusy = false;
+    if (page() === "spotify") render();
+  }
+}
+
+async function importSpotify(id) {
+  const result = await spotifyMusic.importPlaylist(id);
+  spotifySelected = result.id;
+  spotifyOffset = 0;
+  spotifyMessage = "Playlist importada. Las canciones se abren en Spotify.";
+  await loadSpotifyLists();
 }
 
 function renderResults() {
@@ -270,11 +382,21 @@ const matchLabel = {
 
 function catalogCard(track, index) {
   const provider = musicCatalog.providerNames[track.provider];
+  const onlineId = "audius:" + track.id;
+  const playable = track.provider === "audius" && track.playback && !unavailableStreams.has(onlineId) && navigator.onLine;
+  if (playable) onlineResults.set(onlineId, { ...track, id:onlineId, color:"#547af5" });
+  const availability = playable
+    ? (track.playback.kind === "preview" ? "Vista previa disponible" : "Reproducción completa disponible")
+    : "Canción encontrada · Abrir en el servicio";
   const art = track.image ? '<img src="' + escapeText(track.image) + '" alt="" width="56" height="56" loading="lazy" decoding="async" referrerpolicy="no-referrer">'
     : '<span class="external-art" aria-hidden="true">' + icon("wave") + '</span>';
   return '<article class="external-card">' + art + '<div><strong>' + escapeText(track.title) + '</strong><p>'
     + escapeText([track.artist, track.album, provider].filter(Boolean).join(" · ")) + '</p>'
+    + '<small>' + availability + '</small>'
     + (track.match ? '<small>' + matchLabel[track.match] + '</small>' : '') + '</div><div class="external-links">'
+    + (playable ? '<button class="primary" type="button" data-action="play-online" data-id="' + onlineId + '">'
+      + (track.playback.kind === "preview" ? "Escuchar vista previa" : "Escuchar completa") + '</button>'
+      + '<button class="text-button" type="button" data-action="queue-online" data-id="' + onlineId + '">Añadir a cola en línea</button>' : '')
     + '<a class="secondary" target="_blank" rel="noopener noreferrer" href="' + escapeText(track.url) + '">Abrir en ' + provider + '</a>'
     + (index === undefined ? '' : '<button type="button" class="text-button" data-action="compare" data-provider="' + track.provider + '" data-index="' + index + '">Comparar</button>')
     + '</div></article>';
@@ -335,10 +457,10 @@ async function compareTrack(provider, index) {
 
 function render() {
   const current = page();
-  const screens = { inicio: home, biblioteca: library, buscar: search, dj };
+  const screens = { inicio: home, biblioteca: library, buscar: search, dj, spotify: spotifyScreen };
   main.innerHTML = screens[current]();
   for (const link of document.querySelectorAll("[data-page]")) {
-    if (link.dataset.page === current) link.setAttribute("aria-current", "page");
+    if (link.dataset.page === (current === "spotify" ? "biblioteca" : current)) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
   }
   const order = document.querySelector("#folder-order");
@@ -356,14 +478,16 @@ function updateProgress() {
   const duration = playbackDuration();
   const position = Math.min(duration, seconds);
   for (const [slider, prefix] of [[timeline, ""], ...(fullPlayer.open ? [[fullTimeline, "full-"]] : [])]) {
-    slider.disabled = selectedTrack().id !== state.selectedTrack;
-    slider.max = duration;
+    slider.disabled = selectedTrack().id !== currentTrackId() || duration <= 0;
+    slider.max = duration || 1;
     slider.value = position;
-    slider.style.setProperty("--played", (position / duration * 100) + "%");
+    slider.style.setProperty("--played", (duration ? position / duration * 100 : 0) + "%");
     slider.setAttribute("aria-valuetext", formatTime(position) + " de " + formatTime(duration));
     document.querySelector("#" + prefix + "elapsed").textContent = formatTime(position);
-    document.querySelector("#" + prefix + "duration").textContent = formatTime(duration);
+    document.querySelector("#" + prefix + "duration").textContent = duration > 0 ? formatTime(duration) : "—";
   }
+  const track = selectedTrack();
+  playerSystem.update(track.size || onlineTrack ? track : null, playing(), position, duration);
 }
 
 function updatePlayback() {
@@ -376,18 +500,25 @@ function updatePlayback() {
     }
     slot.firstElementChild.classList.toggle("spinning", isPlaying);
   }
-  const missing = current.id !== state.selectedTrack;
+  const missing = current.id !== currentTrackId();
+  const sourceText = onlineTrack ? (current.playback.kind === "preview" ? "Vista previa de Audius" : "Audius · En línea") : "";
   document.querySelector("#track-title").textContent = missing ? "Canción no importada" : current.title;
-  document.querySelector("#track-caption").textContent = missing ? "Disponible al importar el archivo" : current.size
-    ? current.artist : "Demo visual · Sin audio";
+  document.querySelector("#track-caption").textContent = missing ? "Disponible al importar el archivo" : sourceText || (current.size
+    ? current.artist : "Demo visual · Sin audio");
   for (const button of [play, ...(fullPlayer.open ? [document.querySelector("#full-play")] : [])]) {
     button.innerHTML = icon(isPlaying ? "pause" : "play");
     button.setAttribute("aria-label", isPlaying ? "Pausar" : "Reproducir");
+    button.disabled = missing;
   }
   if (fullPlayer.open) {
     document.querySelector("#full-title").textContent = missing ? "Canción no importada" : current.title;
     document.querySelector("#full-artist").textContent = missing ? "Importa el archivo en este dispositivo." : [current.artist, current.album,
-      current.size ? "" : "Demo visual · Sin audio"].filter(Boolean).join(" · ");
+      sourceText || (current.size ? "" : "Demo visual · Sin audio")].filter(Boolean).join(" · ");
+    const source = document.querySelector("#full-source");
+    source.hidden = !onlineTrack;
+    if (onlineTrack) source.href = current.url;
+    document.querySelector("#queue-heading").textContent = onlineTrack ? "Cola en línea de Audius" : "Cola de reproducción";
+    document.querySelector("#back-local").hidden = !onlineTrack;
     document.querySelector("#shuffle").setAttribute("aria-pressed", String(state.shuffle));
     document.querySelector("#repeat").value = state.repeat;
     updateSleepLabel();
@@ -426,6 +557,12 @@ function syncProgress() {
 }
 
 function toggleDemo() {
+  if (onlineTrack) {
+    if (playing()) audio.pause();
+    else if (audioTrackId === onlineTrack.id) startAudio();
+    else playOnline(onlineTrack.id);
+    return;
+  }
   if (!libraryReady && state.selectedTrack.startsWith("local:")) return;
   if (selectedTrack().id !== state.selectedTrack) return notify("Importa la canción en este dispositivo para escucharla.");
   if (selectedTrack().size) {
@@ -446,6 +583,7 @@ function toggleDemo() {
 }
 
 function changeTrack(trackId, start, remember = true) {
+  onlineTrack = undefined;
   if (remember && state.selectedTrack !== trackId) {
     state.history.push(state.selectedTrack);
     if (state.history.length > 200) state.history.shift();
@@ -462,7 +600,12 @@ function changeTrack(trackId, start, remember = true) {
 }
 
 function playableQueue() {
-  const current = selectedTrack();
+  if (onlineTrack) return onlineQueue.filter((id) => !unavailableStreams.has(id));
+  return playableLocalQueue();
+}
+
+function playableLocalQueue() {
+  const current = tracks.find((track) => track.id === state.selectedTrack) ?? demos[0];
   return state.queue.length ? state.queue.filter((id) => tracks.some((track) => track.id === id))
     : tracks.filter((track) => Boolean(track.size) === Boolean(current.size)).map((track) => track.id);
 }
@@ -473,25 +616,35 @@ function nextTrack(automatic = false) {
   const index = queue.indexOf(current.id);
   const start = automatic || playing();
   if (automatic && state.repeat === "one") {
-    changeTrack(current.id, true, false);
+    if (onlineTrack) return playOnline(current.id);
+    else changeTrack(current.id, true, false);
     return true;
   }
   let next = queue[index + 1];
-  if (!next && (state.repeat === "list" || (!automatic && !current.size && !state.queue.length))) {
+  if (!next && (state.repeat === "list" || (!onlineTrack && !automatic && !current.size && !state.queue.length))) {
     if (state.shuffle && queue.length > 1) {
       const order = shuffled(queue.filter((id) => id !== current.id));
-      state.queue = [...order, current.id];
+      if (onlineTrack) onlineQueue = [...order, current.id];
+      else state.queue = [...order, current.id];
       next = order[0];
     } else next = queue[0];
   }
-  if (next) changeTrack(next, start);
+  if (next) {
+    if (onlineTrack) return playOnline(next, start);
+    else changeTrack(next, start);
+  }
   else if (!automatic) notify("Llegaste al final de la cola.");
   return Boolean(next);
 }
 
 function previousTrack() {
-  const position = audioTrackId === state.selectedTrack ? audio.currentTime : seconds;
+  const position = audioTrackId === currentTrackId() ? audio.currentTime : seconds;
   if (position > 1.5) return seek(0);
+  if (onlineTrack) {
+    const queue = playableQueue();
+    const previous = queue[queue.indexOf(onlineTrack.id) - 1];
+    return previous ? playOnline(previous, playing()) : seek(0);
+  }
   let previous;
   while (state.history.length && !previous) {
     const id = state.history.pop();
@@ -513,6 +666,7 @@ function shuffled(ids) {
 }
 
 function playCard(id, card) {
+  if (onlineTrack) returnLocal();
   if (id === state.selectedTrack) return toggleDemo();
   const kind = Boolean(tracks.find((track) => track.id === id)?.size);
   const ids = [...card.closest(".record-grid").querySelectorAll("[data-track]")].map((item) => item.dataset.track)
@@ -523,16 +677,29 @@ function playCard(id, card) {
   changeTrack(id, true, ids.includes(state.selectedTrack));
 }
 
-function setQueue(ids) {
-  state.queue = trackIds(ids);
-  state.queueOriginal = [...state.queue];
-  saveState();
+function setQueue(ids, online = false) {
+  if (online) onlineQueue = onlineOriginal = [...new Set(ids)];
+  else {
+    state.queue = trackIds(ids);
+    state.queueOriginal = [...state.queue];
+    saveState();
+  }
   renderQueue();
 }
 
 function enqueue(id) {
+  if (id.startsWith("audius:")) {
+    if (!onlineResults.has(id) || unavailableStreams.has(id)) return;
+    if (id === onlineTrack?.id) return notify("Esta canción ya está seleccionada.");
+    const queue = onlineQueue.filter((item) => item !== id);
+    const after = onlineTrack ? queue.indexOf(onlineTrack.id) + 1 : queue.length;
+    queue.splice(after, 0, id);
+    setQueue(queue, true);
+    notify("Añadida a la cola en línea de Audius.");
+    return;
+  }
   if (id === state.selectedTrack) return notify("Esta canción ya está seleccionada.");
-  let queue = (state.queue.length ? state.queue : playableQueue()).filter((item) => item !== id);
+  let queue = (state.queue.length ? state.queue : playableLocalQueue()).filter((item) => item !== id);
   if (!queue.includes(state.selectedTrack)) queue = [state.selectedTrack, ...queue];
   queue.splice(queue.indexOf(state.selectedTrack) + 1, 0, id);
   setQueue(queue);
@@ -540,19 +707,21 @@ function enqueue(id) {
 }
 
 function removeFromQueue(id) {
-  if (id === state.selectedTrack) return notify("La canción actual sigue en la cola.");
-  const queue = state.queue.length ? state.queue : playableQueue();
+  if (id === currentTrackId() || id === state.selectedTrack) return notify("La canción actual sigue en la cola.");
+  const online = id.startsWith("audius:");
+  const queue = online ? onlineQueue : (state.queue.length ? state.queue : playableLocalQueue());
   if (!queue.includes(id)) return notify("Esta canción no está en la cola.");
-  setQueue(queue.filter((item) => item !== id));
+  setQueue(queue.filter((item) => item !== id), online);
   notify("Canción retirada de la cola.");
 }
 
 function moveQueue(id, target) {
-  const ids = [...(state.queue.length ? state.queue : playableQueue())];
+  const online = id.startsWith("audius:");
+  const ids = [...(online ? onlineQueue : (state.queue.length ? state.queue : playableLocalQueue()))];
   const from = ids.indexOf(id);
   if (from < 0 || target < 0 || target >= ids.length || target === from) return;
   ids.splice(target, 0, ids.splice(from, 1)[0]);
-  setQueue(ids);
+  setQueue(ids, online);
   if (fullPlayer.open && !gesture) {
     [...document.querySelectorAll("#queue [data-action]")].find((button) => button.dataset.id === id
       && button.dataset.action === (target < from ? "queue-up" : "queue-down"))?.focus();
@@ -561,16 +730,18 @@ function moveQueue(id, target) {
 
 function renderQueue() {
   if (!fullPlayer.open) return;
-  const ids = state.queue.length ? state.queue : playableQueue();
+  const ids = onlineTrack ? onlineQueue : (state.queue.length ? state.queue : playableLocalQueue());
+  const lookup = (id) => onlineTrack ? onlineResults.get(id) : tracks.find((track) => track.id === id);
   const list = document.querySelector("#queue");
-  const signature = JSON.stringify([state.selectedTrack, ids.map((id) => [id, tracks.find((track) => track.id === id)?.title])]);
+  const signature = JSON.stringify([currentTrackId(), ids.map((id) => [id, lookup(id)?.title, unavailableStreams.has(id)])]);
   if (list.dataset.signature === signature) return;
   list.dataset.signature = signature;
   list.innerHTML = ids.map((id, index) => {
-    const track = tracks.find((item) => item.id === id);
-    const current = id === state.selectedTrack;
+    const track = lookup(id);
+    const current = id === currentTrackId();
     return '<li class="queue-item" data-queue-id="' + id + '"' + (current ? ' aria-current="true"' : '') + '>'
-      + '<button class="queue-track" type="button" data-action="queue-play" data-id="' + id + '">' + escapeText(track?.title ?? "Canción no importada")
+      + '<button class="queue-track" type="button" data-action="queue-play" data-id="' + id + '"'
+      + (!track || unavailableStreams.has(id) ? ' disabled' : '') + '>' + escapeText(track?.title ?? "Canción no importada")
       + '<small>' + (current ? "Actual · " : "") + escapeText(track?.artist ?? "Importa el archivo en este dispositivo") + '</small></button>'
       + '<div class="queue-buttons"><span class="drag-handle" aria-hidden="true">⠿</span>'
       + '<button class="icon-button" data-action="queue-up" data-id="' + id + '" aria-label="Subir" data-index="' + index + '"' + (index === 0 ? ' disabled' : '') + '>↑</button>'
@@ -580,6 +751,13 @@ function renderQueue() {
 }
 
 function toggleShuffle() {
+  if (onlineTrack) {
+    state.shuffle = !state.shuffle;
+    onlineQueue = state.shuffle ? [onlineTrack.id, ...shuffled(onlineOriginal.filter((id) => id !== onlineTrack.id))] : [...onlineOriginal];
+    saveState();
+    updatePlayback();
+    return;
+  }
   const queue = state.queue.length ? state.queue : playableQueue();
   state.shuffle = !state.shuffle;
   if (state.shuffle) {
@@ -698,12 +876,13 @@ document.addEventListener("contextmenu", (event) => {
 });
 
 function playing() {
-  return startedAt !== null || (audioTrackId === state.selectedTrack && !audio.paused && !audio.ended);
+  return startedAt !== null || (audioTrackId === currentTrackId() && !audio.paused && !audio.ended);
 }
 
 function playbackDuration() {
-  return audioTrackId === state.selectedTrack && Number.isFinite(audio.duration) && audio.duration > 0
-    ? audio.duration : selectedTrack().seconds;
+  if (audioTrackId === currentTrackId() && Number.isFinite(audio.duration) && audio.duration > 0) return audio.duration;
+  if (onlineTrack?.playback.kind === "preview") return 0;
+  return Number.isFinite(selectedTrack().seconds) ? selectedTrack().seconds : 0;
 }
 
 function resetAudio() {
@@ -714,7 +893,41 @@ function resetAudio() {
   audio.pause();
   audio.removeAttribute("src");
   audio.load();
-  URL.revokeObjectURL(old);
+  if (old.startsWith("blob:")) URL.revokeObjectURL(old);
+}
+
+function returnLocal() {
+  if (!onlineTrack) return;
+  onlineTrack = undefined;
+  resetAudio();
+  seconds = state.position;
+  if (selectedTrack().size) loadAudio(state.selectedTrack, seconds, false);
+  updatePlayback();
+}
+
+function playOnline(id, autoplay = true) {
+  const track = onlineResults.get(id);
+  if (!track || unavailableStreams.has(id) || !navigator.onLine) return false;
+  if (!onlineTrack) {
+    if (startedAt !== null) {
+      seconds = Math.min(selectedTrack().seconds, (performance.now() - startedAt) / 1000);
+      startedAt = null;
+    }
+    checkpoint(true);
+  }
+  resetAudio();
+  onlineTrack = track;
+  if (!onlineQueue.includes(id)) {
+    onlineQueue = [...onlineQueue, id];
+    onlineOriginal = [...onlineOriginal, id];
+  }
+  seconds = 0;
+  audioTrackId = id;
+  audioUrl = track.playback.url;
+  audio.src = audioUrl;
+  updatePlayback();
+  if (autoplay) startAudio();
+  return true;
 }
 
 async function loadAudio(id, position, autoplay) {
@@ -745,6 +958,7 @@ async function startAudio() {
 }
 
 function checkpoint(force = false) {
+  if (onlineTrack) return;
   if (!libraryReady && state.selectedTrack.startsWith("local:")) return;
   if (!force && Date.now() - lastCheckpoint < 2000) return;
   lastCheckpoint = Date.now();
@@ -754,11 +968,21 @@ function checkpoint(force = false) {
 
 function seek(position) {
   seconds = Math.min(playbackDuration(), Math.max(0, position));
-  if (audioTrackId === state.selectedTrack) audio.currentTime = seconds;
+  if (audioTrackId === currentTrackId()) audio.currentTime = seconds;
   if (startedAt !== null) startedAt = performance.now() - seconds * 1000;
   updateProgress();
   scheduleProgress();
   checkpoint(true);
+}
+
+function adjustVolume(value, persist = true) {
+  const volume = Number(value);
+  if (!Number.isFinite(volume) || volume < 0 || volume > 1) return;
+  state.volume = volume;
+  audio.volume = volume;
+  document.querySelector("#volume").value = volume;
+  document.querySelector("#volume-value").textContent = Math.round(volume * 100) + " %";
+  if (persist) saveState(undefined, false);
 }
 
 async function refreshTracks() {
@@ -807,7 +1031,8 @@ async function storageDetails() {
     + '<p>' + (persistent ? "Almacenamiento persistente concedido." : "El navegador administra el espacio disponible.") + '</p>'
     + '<div class="tools storage-actions"><button type="button" class="secondary" data-action="persist">Solicitar persistencia</button>'
     + '<button type="button" class="secondary" data-action="export">Exportar respaldo</button>'
-    + '<button type="button" class="secondary" data-action="restore">Restaurar respaldo</button></div>', "Listo", () => {});
+    + '<button type="button" class="secondary" data-action="restore">Restaurar respaldo</button>'
+    + '<button type="button" class="secondary" data-action="recover-folders">Recuperar carpetas antiguas</button></div>', "Listo", () => {});
 }
 
 async function exportMusic() {
@@ -822,6 +1047,13 @@ async function exportMusic() {
 }
 
 async function restoreMusic(file) {
+  if (file.name.toLowerCase().endsWith(".json")) {
+    if (file.size > 5 * 1024 * 1024) throw new Error("El JSON supera el tamaño de respaldo admitido.");
+    const legacy = JSON.parse(await file.text());
+    if (!Array.isArray(legacy?.folders)) throw new Error("El archivo JSON no contiene una biblioteca reconocida.");
+    recoveryFolders([{ source:"Respaldo JSON", folders:normalizedState(legacy).folders }]);
+    return;
+  }
   const backup = await musicStore.readBackup(file);
   const imported = normalizedState(backup.state);
   await musicStore.restore(backup.records);
@@ -840,6 +1072,7 @@ async function restoreMusic(file) {
   state.order = imported.order;
   state.favorites = trackIds([...state.favorites, ...imported.favorites]);
   for (const key of ["queue", "queueOriginal", "history", "shuffle", "repeat"]) state[key] = imported[key];
+  adjustVolume(imported.volume, false);
   await refreshTracks();
   changeTrack(imported.selectedTrack, false);
   seek(imported.position);
@@ -863,6 +1096,25 @@ function openDialog(title, body, action, onSave, destructive = false) {
   pendingSave = onSave;
   if (!dialog.open) dialog.showModal();
   fields.querySelector("[data-focus]")?.focus();
+}
+
+function recoveryFolders(snapshots) {
+  const groups = snapshots ?? musicRecovery.snapshots(localStorage, normalizedState);
+  const available = musicRecovery.candidates(state.folders, groups);
+  openDialog("Recuperar carpetas antiguas", '<p>Revisa las copias detectadas en este navegador. Selecciona las carpetas que quieras recuperar.</p>'
+    + (available.length ? '<fieldset><legend>Carpetas disponibles</legend>' + available.map(({ source, folder, collision }, index) =>
+      '<label class="check recovery-item"><input type="checkbox" name="recover" value="' + index + '"><span><strong>'
+      + escapeText(folder.name) + '</strong><small>' + escapeText(source) + ' · ' + folder.tracks.length
+      + ' canciones' + (collision ? ' · se guardará una copia' : '') + '</small></span></label>').join("") + '</fieldset>'
+      : '<p class="comparison-note">No hay carpetas distintas en las copias disponibles de este origen. Puedes importar un respaldo de otro dispositivo.</p>'),
+  available.length ? "Recuperar selección" : "Listo", (data) => {
+    if (!available.length) return;
+    const chosen = data.getAll("recover").map((index) => available[Number(index)]?.folder).filter(Boolean);
+    if (!chosen.length) return false;
+    state.folders = musicRecovery.recover(state.folders, chosen,
+      () => globalThis.crypto?.randomUUID?.() ?? Date.now().toString(36) + "-" + Math.random().toString(36).slice(2));
+    saveState("Selección recuperada en tu biblioteca.");
+  });
 }
 
 function editFolder(folder, initialTracks = []) {
@@ -962,7 +1214,7 @@ function applyCloudData(data) {
   });
   const candidate = { ...state };
   for (const key of cloudFields) candidate[key] = sanitized[key];
-  localStorage.setItem(storageKey, JSON.stringify(candidate));
+  writeState(candidate);
   Object.assign(state, candidate);
   if (folderId && folderId !== "@favorites" && !state.folders.some((folder) => folder.id === folderId)) folderId = null;
   render();
@@ -1019,6 +1271,23 @@ document.addEventListener("click", (event) => {
   }
   const folder = state.folders.find((item) => item.id === id);
   switch (action) {
+    case "recover-folders": recoveryFolders(); break;
+    case "spotify-connect":
+      spotifyOperation(() => spotifyMusic.authorize()); break;
+    case "spotify-disconnect":
+      openDialog("Desconectar Spotify", "<p>Se quitarán de este dispositivo la sesión y las copias temporales de esta cuenta.</p>",
+        "Desconectar", () => {
+          spotifyOperation(async () => {
+            await spotifyMusic.disconnect();
+            spotifyLists = [];
+            spotifySelected = undefined;
+            spotifyMessage = "Cuenta desconectada.";
+          });
+        }, true);
+      break;
+    case "spotify-list": spotifySelected = id; spotifyOffset = 0; render(); break;
+    case "spotify-prev": spotifyOffset = Math.max(0, spotifyOffset - 20); render(); break;
+    case "spotify-next": spotifyOffset += 20; render(); break;
     case "account":
       openDialog("Cuenta y sincronización", accountContents(), "Listo", () => {});
       cloudMusic.connect().catch(() => {});
@@ -1026,6 +1295,9 @@ document.addEventListener("click", (event) => {
     case "compare": compareTrack(button.dataset.provider, Number(button.dataset.index)); break;
     case "expand": expandPlayer(); break;
     case "collapse": fullPlayer.close(); break;
+    case "play-online": playOnline(id); break;
+    case "queue-online": enqueue(id); break;
+    case "back-local": returnLocal(); break;
     case "play": toggleDemo(); break;
     case "previous": previousTrack(); break;
     case "next": nextTrack(); break;
@@ -1035,7 +1307,10 @@ document.addEventListener("click", (event) => {
     case "queue-down": moveQueue(id, Number(button.dataset.index) + 1); break;
     case "queue-remove": removeFromQueue(id); break;
     case "queue-play":
-      if (!tracks.some((item) => item.id === id)) notify("Importa esta canción para escucharla en este dispositivo.");
+      if (id.startsWith("audius:")) {
+        if (id === onlineTrack?.id) toggleDemo();
+        else playOnline(id);
+      } else if (!tracks.some((item) => item.id === id)) notify("Importa esta canción para escucharla en este dispositivo.");
       else if (id === state.selectedTrack) toggleDemo();
       else changeTrack(id, true);
       break;
@@ -1103,6 +1378,18 @@ document.addEventListener("change", (event) => {
 });
 
 document.addEventListener("submit", (event) => {
+  if (event.target.id === "spotify-form") {
+    event.preventDefault();
+    spotifyLink = new FormData(event.target).get("playlist").trim();
+    const id = spotifyMusic.playlistId(spotifyLink);
+    if (!id) {
+      spotifyMessage = "Pega un enlace de playlist de open.spotify.com.";
+      render();
+      return;
+    }
+    spotifyOperation(() => spotifyMusic.connected() ? importSpotify(id) : spotifyMusic.authorize(spotifyLink));
+    return;
+  }
   if (event.target.id !== "search-form") return;
   event.preventDefault();
   query = document.querySelector("#query").value.trim();
@@ -1110,6 +1397,10 @@ document.addEventListener("submit", (event) => {
   searchCountry = document.querySelector("#search-country").value.toUpperCase();
   externalEnabled = document.querySelector("#search-online").checked;
   externalSearch();
+});
+
+document.addEventListener("input", (event) => {
+  if (event.target.id === "spotify-link") spotifyLink = event.target.value;
 });
 
 dialog.addEventListener("close", () => {
@@ -1137,18 +1428,52 @@ play.addEventListener("click", toggleDemo);
 document.querySelector("#next").addEventListener("click", () => nextTrack());
 timeline.addEventListener("input", () => seek(Number(timeline.value)));
 fullTimeline.addEventListener("input", () => seek(Number(fullTimeline.value)));
+document.querySelector("#volume").addEventListener("input", (event) => adjustVolume(event.target.value, false));
+document.querySelector("#volume").addEventListener("change", (event) => adjustVolume(event.target.value));
 
 for (const type of ["loadedmetadata", "timeupdate", "seeked", "play", "pause", "ended", "error"]) {
   audio.addEventListener(type, () => {
-    if (audioTrackId !== state.selectedTrack) return;
+    if (audioTrackId !== currentTrackId()) return;
     seconds = audio.currentTime;
     if (type === "timeupdate") updateProgress();
     else updatePlayback();
     if (type !== "loadedmetadata") checkpoint(type !== "timeupdate");
-    if (type === "error") notify("El navegador no pudo reproducir esta canción.");
+    if (type === "error") {
+      if (onlineTrack) {
+        unavailableStreams.add(onlineTrack.id);
+        returnLocal();
+        renderExternal();
+        if (dialog.open) {
+          for (const button of fields.querySelectorAll('[data-action="play-online"], [data-action="queue-online"]')) {
+            if (unavailableStreams.has(button.dataset.id)) button.hidden = true;
+          }
+        }
+        notify("Audius no pudo servir esta pista. Puedes abrirla en Audius.");
+      } else notify("El navegador no pudo reproducir esta canción.");
+    }
     if (type === "ended") nextTrack(true);
   });
 }
+
+playerSystem.controls({
+  play:() => { if (!playing() && (onlineTrack || selectedTrack().size)) toggleDemo(); },
+  pause:() => audio.pause(),
+  stop:() => { audio.pause(); seek(0); },
+  previoustrack:() => { if (onlineTrack || selectedTrack().size) previousTrack(); },
+  nexttrack:() => { if (onlineTrack || selectedTrack().size) nextTrack(); },
+  seekbackward:(details) => seek(seconds - (details.seekOffset ?? 10)),
+  seekforward:(details) => seek(seconds + (details.seekOffset ?? 10)),
+  seekto:(details) => { if (Number.isFinite(details.seekTime)) seek(details.seekTime); }
+});
+
+window.addEventListener("offline", () => {
+  if (onlineTrack) {
+    returnLocal();
+    notify("Se perdió la conexión. Tu cola local sigue disponible.");
+  }
+  renderExternal();
+});
+window.addEventListener("online", renderExternal);
 
 document.querySelector("#audio-files").addEventListener("change", (event) => {
   const files = [...event.target.files];
@@ -1179,9 +1504,24 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("pagehide", () => checkpoint(true));
 cloudMusic.init(readCloudData, applyCloudData);
 scheduleSleep();
+adjustVolume(state.volume, false);
 
 for (const target of document.querySelectorAll("[data-icon]")) target.innerHTML = icon(target.dataset.icon);
 render();
+spotifyMusic.callback().then(async (result) => {
+  if (result) {
+    render();
+    spotifyMessage = "Cuenta conectada.";
+    if (result.playlist) {
+      spotifyLink = "https://open.spotify.com/playlist/" + result.playlist;
+      await spotifyOperation(() => importSpotify(result.playlist));
+    }
+  }
+  await loadSpotifyLists();
+}).catch((error) => {
+  spotifyMessage = error.message;
+  if (page() === "spotify") render();
+});
 refreshTracks().then(() => {
   if (selectedTrack().size) loadAudio(state.selectedTrack, seconds, false);
   else if (state.selectedTrack !== selectedTrack().id) notify("La última canción no está almacenada en este dispositivo.");

@@ -156,6 +156,25 @@ dialog::backdrop { background: #040713be; backdrop-filter: blur(3px); }
 }
 
 [hidden] { display: none !important; }
+.spotify-feature .spotify-logo { display:block; width:104px; height:auto; margin-bottom:20px; }
+.spotify-status { margin-top:14px; }
+.spotify-form { width:min(100%, 680px); }
+.spotify-form .field { min-width:0; }
+.spotify-playlist > p { color:var(--muted); }
+.spotify-row .spotify-art { object-fit:contain; border-radius:8px; }
+.spotify-row .spotify-row-logo { width:72px; height:auto; object-fit:contain; border-radius:0; }
+.spotify-pages { margin-top:13px; justify-content:center; }
+.explicit-label { padding:1px 4px; border-radius:3px; background:#c2cbe0; color:#10182b; text-decoration:none; font-size:.75rem; }
+.recovery-item small { display:block; margin-top:3px; color:var(--muted); }
+.volume-setting { display:flex; align-items:center; justify-content:center; gap:8px; margin:0 auto 12px; color:var(--muted); font-size:.85rem; }
+.volume-setting input { min-width:0; width:clamp(85px, 30vw, 160px); min-height:36px; accent-color:#80a0ff; }
+.volume-setting output { min-width:3.6em; text-align:end; font-variant-numeric:tabular-nums; }
+#full-message { color:#c4d2ff; margin-bottom:8px; }
+#full-message:empty { display:none; }
+.source-link { display:inline-block; }
+.external-card small { display:block; }
+button:disabled { cursor:default; opacity:.58; }
+@media (max-width: 720px) { .spotify-row .spotify-art { border-radius:4px; } }
 #search-form { display: grid; }
 .query-row, .search-options, .search-options label { display:flex; align-items:center; gap:8px; }
 .search-options { flex-wrap:wrap; font-size:.87rem; color:var(--muted); }
