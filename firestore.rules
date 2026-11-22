@@ -1,0 +1,27 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{uid}/miMusica/library {
+      function owner() {
+        return request.auth != null && request.auth.uid == uid;
+      }
+      function valid() {
+        let d = request.resource.data;
+        return d.keys().hasOnly(['schema', 'revision', 'data', 'updatedAt'])
+          && d.schema == 1 && d.revision is int && d.updatedAt == request.time
+          && d.data is map
+          && d.data.keys().hasOnly(['folders','favorites','order','queue','queueOriginal','shuffle','repeat'])
+          && d.data.folders is list && d.data.folders.size() <= 1000
+          && d.data.favorites is list && d.data.favorites.size() <= 10000
+          && d.data.queue is list && d.data.queue.size() <= 10000
+          && d.data.queueOriginal is list && d.data.queueOriginal.size() <= 10000
+          && d.data.order in ['name', 'date'] && d.data.shuffle is bool
+          && d.data.repeat in ['off', 'list', 'one'];
+      }
+      allow get: if owner();
+      allow create: if owner() && valid() && request.resource.data.revision == 1;
+      allow update: if owner() && valid() && request.resource.data.revision == resource.data.revision + 1;
+    }
+  }
+}
+

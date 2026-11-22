@@ -13,15 +13,17 @@ const icons = {
   close: '<path d="m6 6 12 12M18 6 6 18"/>',
   play: '<path d="M8 5v14l12-7z" fill="currentColor" stroke="none"/>',
   pause: '<path d="M7 5h4v14H7zm6 0h4v14h-4z" fill="currentColor" stroke="none"/>',
-  next: '<path d="M5 5v14l11-7zm12 0h2v14h-2z" fill="currentColor" stroke="none"/>'
+  next: '<path d="M5 5v14l11-7zm12 0h2v14h-2z" fill="currentColor" stroke="none"/>',
+  previous: '<path d="M19 5v14L8 12zM5 5h2v14H5z" fill="currentColor" stroke="none"/>'
 };
 
-const tracks = [
+const demos = [
   { id: "pulso", title: "Pulso nocturno", artist: "Órbita", seconds: 222, color: "#3e69ff" },
   { id: "horizonte", title: "Horizonte azul", artist: "Luz Polar", seconds: 198, color: "#9560f6" },
   { id: "cinta", title: "Cinta magnética", artist: "Circuito Sur", seconds: 246, color: "#27a9b4" },
   { id: "gravedad", title: "Gravedad cero", artist: "Nova Prisma", seconds: 211, color: "#e27865" }
 ];
+let tracks = [...demos];
 
 const initialState = {
   order: "name",
@@ -33,7 +35,7 @@ const initialState = {
   ]
 };
 
-const storageKey = "mi-musica-v1";
+const storageKey = "mi-musica-v2";
 const main = document.querySelector("main");
 const dialog = document.querySelector("#dialog");
 const form = document.querySelector("#dialog-form");
@@ -42,16 +44,42 @@ const submit = document.querySelector("#dialog-submit");
 const timeline = document.querySelector("#timeline");
 const play = document.querySelector("#play");
 const status = document.querySelector("#status");
+const audio = document.querySelector("#audio");
+const fullPlayer = document.querySelector("#full-player");
+const fullTimeline = document.querySelector("#full-timeline");
 const validColor = /^#[0-9a-f]{6}$/i;
 const pages = ["inicio", "buscar", "biblioteca", "dj"];
 const state = loadState();
 let folderId = null;
 let query = "";
-let seconds = 0;
+let searchField = "any";
+let externalEnabled = true;
+let searchCountry = countryFromBrowser();
+let catalogGroups = null;
+let catalogRequest;
+let compareRequest;
+let seconds = state.position ?? 0;
 let startedAt = null;
 let pendingSave = null;
 let toastTimer;
 let progressTimer;
+let audioUrl;
+let audioTrackId;
+let audioLoad = 0;
+let lastCheckpoint = 0;
+let musicBusy = false;
+let libraryReady = false;
+let sleepTimer;
+let gesture;
+let gestureClick;
+
+function validTrackId(id) {
+  return typeof id === "string" && (demos.some((track) => track.id === id) || /^local:[0-9a-f]{64}$/.test(id));
+}
+
+function trackIds(ids) {
+  return Array.isArray(ids) ? [...new Set(ids.filter(validTrackId))] : [];
+}
 
 function icon(name) {
   return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + icons[name] + "</svg>";
@@ -65,31 +93,38 @@ function escapeText(value) {
 
 function loadState() {
   try {
-    const saved = JSON.parse(localStorage.getItem(storageKey));
-    if (saved && Array.isArray(saved.folders)) {
-      return {
-        order: saved.order === "date" ? "date" : "name",
-        selectedTrack: tracks.some((track) => track.id === saved.selectedTrack) ? saved.selectedTrack : tracks[0].id,
-        folders: saved.folders.filter((folder) => folder
-          && typeof folder.id === "string"
-          && typeof folder.name === "string"
-          && validColor.test(folder.color)
-          && Number.isFinite(folder.created)
-          && Array.isArray(folder.tracks)).map((folder) => ({
-            ...folder,
-            tracks: tracks.filter((track) => folder.tracks.includes(track.id)).map((track) => track.id)
-          }))
-      };
-    }
+    const saved = JSON.parse(localStorage.getItem(storageKey) ?? localStorage.getItem("mi-musica-v1"));
+    if (saved && Array.isArray(saved.folders)) return normalizedState(saved);
   } catch {
     // A blocked or invalid local store still allows the demo to run.
   }
-  return initialState;
+  return normalizedState(initialState);
 }
 
-function saveState(message) {
+function normalizedState(saved) {
+  return {
+    order: saved.order === "date" ? "date" : "name",
+    selectedTrack: validTrackId(saved.selectedTrack) ? saved.selectedTrack : demos[0].id,
+    position: Number.isFinite(saved.position) ? Math.max(0, saved.position) : 0,
+    favorites: trackIds(saved.favorites),
+    queue: trackIds(saved.queue),
+    queueOriginal: trackIds(saved.queueOriginal ?? saved.queue),
+    history: (Array.isArray(saved.history) ? saved.history.filter(validTrackId) : []).slice(-200),
+    shuffle: saved.shuffle === true,
+    repeat: ["off", "list", "one"].includes(saved.repeat) ? saved.repeat : "off",
+    sleepUntil: Number.isFinite(saved.sleepUntil) ? Math.max(0, saved.sleepUntil) : 0,
+    folders: saved.folders.filter((folder) => folder && typeof folder.id === "string"
+      && typeof folder.name === "string" && validColor.test(folder.color)
+      && Number.isFinite(folder.created) && Array.isArray(folder.tracks)).map((folder) => ({
+        id: folder.id, name: folder.name, color: folder.color, created: folder.created, tracks: trackIds(folder.tracks)
+      }))
+  };
+}
+
+function saveState(message, synchronize = true) {
   try {
     localStorage.setItem(storageKey, JSON.stringify(state));
+    if (synchronize) cloudMusic.changed();
     if (message) notify(message);
   } catch {
     notify("El navegador bloqueó el guardado. Los cambios duran hasta cerrar o recargar la página.");
@@ -108,7 +143,7 @@ function page() {
 }
 
 function selectedTrack() {
-  return tracks.find((track) => track.id === state.selectedTrack);
+  return tracks.find((track) => track.id === state.selectedTrack) ?? demos[0];
 }
 
 function sortedFolders() {
@@ -123,10 +158,11 @@ function vinyl(track) {
 
 function trackGrid(list) {
   if (!list.length) return '<p class="empty">No hay canciones para mostrar.</p>';
-  return '<div class="record-grid">' + list.map((track) => '<article class="record-card" style="--tone:' + track.color + '">'
+  return '<div class="record-grid">' + list.map((track) => '<article class="record-card" data-track="' + track.id + '" style="--tone:' + track.color + '">'
     + '<button class="track-demo" type="button" data-action="demo" data-id="' + track.id + '" aria-pressed="false">'
-    + vinyl(track) + '<strong>' + track.title + '</strong><small>' + track.artist + '</small></button>'
-    + '<button class="icon-button" type="button" data-action="assign" data-id="' + track.id + '" aria-label="Organizar ' + track.title + ' en carpetas">' + icon("more") + '</button>'
+    + vinyl(track) + '<strong>' + escapeText(track.title) + '</strong><small>' + escapeText(track.artist) + '</small></button>'
+    + (state.favorites.includes(track.id) ? '<span class="favorite-mark" aria-label="Me gusta">♥</span>' : "")
+    + '<button class="icon-button" type="button" data-action="context" data-id="' + track.id + '" aria-label="Opciones de ' + escapeText(track.title) + '">' + icon("more") + '</button>'
     + '</article>').join("") + '</div>';
 }
 
@@ -156,14 +192,19 @@ function section(title, content, action = "") {
 function home() {
   return '<section class="hero"><div class="hero-copy"><span class="eyebrow">Biblioteca musical</span>'
     + '<h1>Tu música,<br><span>a tu ritmo.</span></h1>'
-    + '<p>Explora canciones de muestra y crea tu propia colección.</p>'
+    + '<p>Importa tu música y crea tu propia colección.</p>'
     + '<a class="primary" href="#biblioteca">' + icon("library") + ' Explorar biblioteca</a></div></section>'
-    + section("Vinilos de muestra", trackGrid(tracks), '<a href="#biblioteca">Ver biblioteca</a>')
+    + section(tracks.length > demos.length ? "Tu música" : "Vinilos de muestra", trackGrid(tracks.slice(0, 4)), '<a href="#biblioteca">Ver biblioteca</a>')
     + section("Tus carpetas", folderGrid(sortedFolders().slice(0, 3)),
       '<button class="text-button" type="button" data-action="new">+ Nueva carpeta</button>');
 }
 
 function library() {
+  if (folderId === "@favorites") {
+    return '<button type="button" class="text-button" data-action="all-folders">Volver a Biblioteca</button>'
+      + heading("Me gusta", "Canciones marcadas como favoritas.")
+      + section("Canciones", trackGrid(tracks.filter((track) => state.favorites.includes(track.id))));
+  }
   const folder = state.folders.find((item) => item.id === folderId);
   if (folder) {
     return '<button type="button" class="text-button" data-action="all-folders">Volver a Biblioteca</button>'
@@ -176,19 +217,25 @@ function library() {
   const tools = '<div class="tools"><select id="folder-order" aria-label="Ordenar carpetas">'
     + '<option value="name">Alfabéticamente</option><option value="date">Más recientes primero</option></select>'
     + '<button class="primary" type="button" data-action="new">' + icon("plus") + ' Nueva carpeta</button></div>';
-  return heading("Biblioteca", "Organiza las canciones de muestra en tus propias carpetas.")
+  return heading("Biblioteca", "Importa canciones de este dispositivo y organízalas en tus carpetas.")
+    + '<div class="tools"><button class="primary" data-action="import">' + icon("plus") + ' Importar música</button>'
+    + '<button class="secondary" data-action="favorites">Me gusta (' + state.favorites.length + ')</button>'
+    + '<button class="secondary" data-action="storage">Almacenamiento y respaldo</button></div>'
     + section("Tus carpetas", folderGrid(sortedFolders()), tools)
     + section("Todas las canciones", trackGrid(tracks));
 }
 
 function search() {
-  return heading("Buscar", "Busca por canción o artista en el catálogo de muestra.")
+  return heading("Buscar", "Busca por canción, artista o álbum en tu biblioteca y en catálogos compatibles.")
     + '<form class="search-box" id="search-form" role="search">'
-    + '<input class="field" type="search" id="query" maxlength="120" aria-label="Canción o artista" placeholder="Canción o artista" value="' + escapeText(query) + '">'
-    + '<button class="primary" type="submit">' + icon("search") + ' Buscar</button></form>'
-    + '<section class="feature"><span>' + icon("search") + '</span><h2>Comparador multiplataforma</h2>'
-    + '<p>Espacio reservado para comparar la disponibilidad de canciones cuando se conecten los servicios.</p></section>'
-    + '<div id="results"></div>';
+    + '<div class="query-row"><input class="field" type="search" id="query" maxlength="120" aria-label="Canción, artista o álbum" placeholder="Canción, artista o álbum" value="' + escapeText(query) + '">'
+    + '<button class="primary" type="submit">' + icon("search") + ' Buscar</button></div>'
+    + '<div class="search-options"><label>Buscar por <select id="search-field" aria-label="Buscar por">'
+    + [["any","Todo"],["title","Canción"],["artist","Artista"],["album","Álbum"]].map(([value,label]) => (
+      '<option value="' + value + '"' + (value === searchField ? ' selected' : '') + '>' + label + '</option>')).join("")
+    + '</select></label><label>País de iTunes <input class="field country-field" id="search-country" aria-label="País de iTunes" maxlength="2" pattern="[A-Za-z]{2}" required value="' + searchCountry + '"></label>'
+    + '<label class="check"><input type="checkbox" id="search-online"' + (externalEnabled ? ' checked' : '') + '> Consultar iTunes Store y Audius</label></div></form>'
+    + '<div id="results"></div><div id="external-results" aria-live="polite"></div>';
 }
 
 function dj() {
@@ -198,10 +245,92 @@ function dj() {
 }
 
 function renderResults() {
-  const normalize = (value) => value.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-  const matches = tracks.filter((track) => normalize(track.title + " " + track.artist).includes(normalize(query)));
-  document.querySelector("#results").innerHTML = section(query ? "Resultados de muestra" : "Catálogo de muestra", trackGrid(matches));
+  const terms = musicCatalog.normalize(query).split(" ");
+  const matches = tracks.filter((track) => {
+    const haystack = musicCatalog.normalize(searchField === "any"
+      ? [track.title, track.artist, track.album].filter(Boolean).join(" ") : track[searchField]);
+    return terms.every((term) => haystack.includes(term));
+  });
+  document.querySelector("#results").innerHTML = section("Biblioteca local", trackGrid(matches));
+  renderExternal();
   updatePlayback();
+}
+
+function countryFromBrowser() {
+  try {
+    const region = new Intl.Locale(navigator.language).region;
+    return /^[A-Z]{2}$/.test(region ?? "") ? region : "US";
+  } catch { return "US"; }
+}
+
+const matchLabel = {
+  confirmed:"Coincidencia exacta · ISRC", metadata:"Coincidencia exacta por metadatos · Grabación sin confirmar",
+  alternate:"Versión alternativa", unconfirmed:"Coincidencia no confirmada"
+};
+
+function catalogCard(track, index) {
+  const provider = musicCatalog.providerNames[track.provider];
+  const art = track.image ? '<img src="' + escapeText(track.image) + '" alt="" width="56" height="56" loading="lazy" decoding="async" referrerpolicy="no-referrer">'
+    : '<span class="external-art" aria-hidden="true">' + icon("wave") + '</span>';
+  return '<article class="external-card">' + art + '<div><strong>' + escapeText(track.title) + '</strong><p>'
+    + escapeText([track.artist, track.album, provider].filter(Boolean).join(" · ")) + '</p>'
+    + (track.match ? '<small>' + matchLabel[track.match] + '</small>' : '') + '</div><div class="external-links">'
+    + '<a class="secondary" target="_blank" rel="noopener noreferrer" href="' + escapeText(track.url) + '">Abrir en ' + provider + '</a>'
+    + (index === undefined ? '' : '<button type="button" class="text-button" data-action="compare" data-provider="' + track.provider + '" data-index="' + index + '">Comparar</button>')
+    + '</div></article>';
+}
+
+function renderExternal() {
+  const target = document.querySelector("#external-results");
+  if (!target) return;
+  if (!catalogGroups) {
+    if (catalogRequest) target.innerHTML = '<p class="empty">Consultando catálogos…</p>';
+    else if (query && externalEnabled && !navigator.onLine) target.innerHTML = '<p class="empty">Sin conexión. La búsqueda local sigue disponible.</p>';
+    else target.textContent = "";
+    return;
+  }
+  target.innerHTML = catalogGroups.map((group) => {
+    const title = musicCatalog.providerNames[group.id] + (group.id === "itunes" ? " · " + searchCountry : "");
+    const message = group.error ? "No se pudo consultar este catálogo. Vuelve a intentar."
+      : group.unsupported ? "La búsqueda por álbum está disponible en iTunes Store."
+      : "No se encontraron resultados en esta consulta.";
+    const body = group.results.length ? '<div class="external-grid">' + group.results.map(catalogCard).join("") + '</div>'
+      : '<p class="empty">' + message + '</p>';
+    return section(title, body);
+  }).join("");
+}
+
+async function externalSearch() {
+  catalogRequest?.abort();
+  catalogRequest = undefined;
+  catalogGroups = null;
+  if (!query || !externalEnabled || !navigator.onLine) {
+    renderResults();
+    return;
+  }
+  const request = new AbortController();
+  catalogRequest = request;
+  renderResults();
+  const results = await musicCatalog.search(query, { field:searchField, country:searchCountry, signal:request.signal });
+  if (request.signal.aborted) return;
+  catalogRequest = undefined;
+  catalogGroups = results;
+  renderExternal();
+}
+
+async function compareTrack(provider, index) {
+  const track = catalogGroups?.find((item) => item.id === provider)?.results[index];
+  if (!track) return;
+  compareRequest?.abort();
+  const request = new AbortController();
+  compareRequest = request;
+  openDialog("Comparar canción", catalogCard(track) + '<p class="empty">Buscando en el otro catálogo…</p>', "Listo", () => {});
+  const comparison = await musicCatalog.compare(track, { country:searchCountry, signal:request.signal });
+  if (request.signal.aborted || !dialog.open || compareRequest !== request) return;
+  fields.innerHTML = catalogCard(track) + '<p class="comparison-note">Los resultados corresponden a esta consulta. La disponibilidad de reproducción depende del servicio y la región.</p>'
+    + comparison.map((group) => '<h3>' + musicCatalog.providerNames[group.id] + '</h3>'
+      + (group.results.length ? group.results.map((item) => catalogCard(item)).join("")
+        : '<p class="empty">' + (group.error ? "Catálogo temporalmente inaccesible." : "Sin coincidencias comprobadas en esta consulta.") + '</p>')).join("");
 }
 
 function render() {
@@ -224,27 +353,46 @@ function formatTime(value) {
 }
 
 function updateProgress() {
-  const duration = selectedTrack().seconds;
-  timeline.max = duration;
-  timeline.value = Math.floor(seconds);
-  timeline.style.setProperty("--played", (seconds / duration * 100) + "%");
-  timeline.setAttribute("aria-valuetext", formatTime(seconds) + " de " + formatTime(duration));
-  document.querySelector("#elapsed").textContent = formatTime(seconds);
-  document.querySelector("#duration").textContent = formatTime(duration);
+  const duration = playbackDuration();
+  const position = Math.min(duration, seconds);
+  for (const [slider, prefix] of [[timeline, ""], ...(fullPlayer.open ? [[fullTimeline, "full-"]] : [])]) {
+    slider.disabled = selectedTrack().id !== state.selectedTrack;
+    slider.max = duration;
+    slider.value = position;
+    slider.style.setProperty("--played", (position / duration * 100) + "%");
+    slider.setAttribute("aria-valuetext", formatTime(position) + " de " + formatTime(duration));
+    document.querySelector("#" + prefix + "elapsed").textContent = formatTime(position);
+    document.querySelector("#" + prefix + "duration").textContent = formatTime(duration);
+  }
 }
 
 function updatePlayback() {
   const current = selectedTrack();
-  const isPlaying = startedAt !== null;
-  const mini = document.querySelector("#mini-disc");
-  if (mini.dataset.id !== current.id) {
-    mini.innerHTML = vinyl(current);
-    mini.dataset.id = current.id;
+  const isPlaying = playing();
+  for (const slot of document.querySelectorAll(fullPlayer.open ? "#mini-disc, #full-disc" : "#mini-disc")) {
+    if (slot.dataset.id !== current.id) {
+      slot.innerHTML = vinyl(current);
+      slot.dataset.id = current.id;
+    }
+    slot.firstElementChild.classList.toggle("spinning", isPlaying);
   }
-  mini.firstElementChild.classList.toggle("spinning", isPlaying);
-  document.querySelector("#track-title").textContent = current.title;
-  play.innerHTML = icon(isPlaying ? "pause" : "play");
-  play.setAttribute("aria-label", isPlaying ? "Pausar demo visual" : "Iniciar demo visual");
+  const missing = current.id !== state.selectedTrack;
+  document.querySelector("#track-title").textContent = missing ? "Canción no importada" : current.title;
+  document.querySelector("#track-caption").textContent = missing ? "Disponible al importar el archivo" : current.size
+    ? current.artist : "Demo visual · Sin audio";
+  for (const button of [play, ...(fullPlayer.open ? [document.querySelector("#full-play")] : [])]) {
+    button.innerHTML = icon(isPlaying ? "pause" : "play");
+    button.setAttribute("aria-label", isPlaying ? "Pausar" : "Reproducir");
+  }
+  if (fullPlayer.open) {
+    document.querySelector("#full-title").textContent = missing ? "Canción no importada" : current.title;
+    document.querySelector("#full-artist").textContent = missing ? "Importa el archivo en este dispositivo." : [current.artist, current.album,
+      current.size ? "" : "Demo visual · Sin audio"].filter(Boolean).join(" · ");
+    document.querySelector("#shuffle").setAttribute("aria-pressed", String(state.shuffle));
+    document.querySelector("#repeat").value = state.repeat;
+    updateSleepLabel();
+    renderQueue();
+  }
   for (const button of document.querySelectorAll(".track-demo")) {
     const active = button.dataset.id === current.id;
     button.classList.toggle("is-current", active);
@@ -268,14 +416,24 @@ function syncProgress() {
   seconds = Math.min(selectedTrack().seconds, (performance.now() - startedAt) / 1000);
   if (seconds >= selectedTrack().seconds) {
     startedAt = null;
-    updatePlayback();
+    checkpoint(true);
+    if (!nextTrack(true)) updatePlayback();
   } else {
     updateProgress();
+    checkpoint();
     scheduleProgress();
   }
 }
 
 function toggleDemo() {
+  if (!libraryReady && state.selectedTrack.startsWith("local:")) return;
+  if (selectedTrack().id !== state.selectedTrack) return notify("Importa la canción en este dispositivo para escucharla.");
+  if (selectedTrack().size) {
+    if (playing()) audio.pause();
+    else if (audioTrackId === state.selectedTrack) startAudio();
+    else loadAudio(state.selectedTrack, seconds, true);
+    return;
+  }
   if (startedAt === null) {
     if (seconds >= selectedTrack().seconds) seconds = 0;
     startedAt = performance.now() - seconds * 1000;
@@ -283,26 +441,424 @@ function toggleDemo() {
     seconds = Math.min(selectedTrack().seconds, (performance.now() - startedAt) / 1000);
     startedAt = null;
   }
+  checkpoint(true);
   updatePlayback();
 }
 
-function changeTrack(trackId, start) {
+function changeTrack(trackId, start, remember = true) {
+  if (remember && state.selectedTrack !== trackId) {
+    state.history.push(state.selectedTrack);
+    if (state.history.length > 200) state.history.shift();
+  }
+  resetAudio();
   state.selectedTrack = trackId;
   seconds = 0;
-  startedAt = start ? performance.now() : null;
+  const local = selectedTrack().size;
+  startedAt = start && !local ? performance.now() : null;
+  if (local) loadAudio(trackId, 0, start);
+  state.position = 0;
   saveState();
   updatePlayback();
 }
 
-function nextTrack() {
-  const index = tracks.findIndex((track) => track.id === state.selectedTrack);
-  changeTrack(tracks[(index + 1) % tracks.length].id, startedAt !== null);
+function playableQueue() {
+  const current = selectedTrack();
+  return state.queue.length ? state.queue.filter((id) => tracks.some((track) => track.id === id))
+    : tracks.filter((track) => Boolean(track.size) === Boolean(current.size)).map((track) => track.id);
+}
+
+function nextTrack(automatic = false) {
+  const current = selectedTrack();
+  const queue = playableQueue();
+  const index = queue.indexOf(current.id);
+  const start = automatic || playing();
+  if (automatic && state.repeat === "one") {
+    changeTrack(current.id, true, false);
+    return true;
+  }
+  let next = queue[index + 1];
+  if (!next && (state.repeat === "list" || (!automatic && !current.size && !state.queue.length))) {
+    if (state.shuffle && queue.length > 1) {
+      const order = shuffled(queue.filter((id) => id !== current.id));
+      state.queue = [...order, current.id];
+      next = order[0];
+    } else next = queue[0];
+  }
+  if (next) changeTrack(next, start);
+  else if (!automatic) notify("Llegaste al final de la cola.");
+  return Boolean(next);
+}
+
+function previousTrack() {
+  const position = audioTrackId === state.selectedTrack ? audio.currentTime : seconds;
+  if (position > 1.5) return seek(0);
+  let previous;
+  while (state.history.length && !previous) {
+    const id = state.history.pop();
+    if (tracks.some((track) => track.id === id)) previous = id;
+  }
+  const queue = playableQueue();
+  previous ??= queue[queue.indexOf(state.selectedTrack) - 1];
+  if (previous) changeTrack(previous, playing(), false);
+  else seek(0);
+}
+
+function shuffled(ids) {
+  const list = [...ids];
+  for (let index = list.length - 1; index > 0; index--) {
+    const swap = Math.floor(Math.random() * (index + 1));
+    [list[swap], list[index]] = [list[index], list[swap]];
+  }
+  return list;
+}
+
+function playCard(id, card) {
+  if (id === state.selectedTrack) return toggleDemo();
+  const kind = Boolean(tracks.find((track) => track.id === id)?.size);
+  const ids = [...card.closest(".record-grid").querySelectorAll("[data-track]")].map((item) => item.dataset.track)
+    .filter((item) => Boolean(tracks.find((track) => track.id === item)?.size) === kind);
+  state.queueOriginal = trackIds(ids);
+  state.queue = state.shuffle ? [id, ...shuffled(ids.filter((item) => item !== id))] : [...ids];
+  if (!ids.includes(state.selectedTrack)) state.history = [];
+  changeTrack(id, true, ids.includes(state.selectedTrack));
+}
+
+function setQueue(ids) {
+  state.queue = trackIds(ids);
+  state.queueOriginal = [...state.queue];
+  saveState();
+  renderQueue();
+}
+
+function enqueue(id) {
+  if (id === state.selectedTrack) return notify("Esta canción ya está seleccionada.");
+  let queue = (state.queue.length ? state.queue : playableQueue()).filter((item) => item !== id);
+  if (!queue.includes(state.selectedTrack)) queue = [state.selectedTrack, ...queue];
+  queue.splice(queue.indexOf(state.selectedTrack) + 1, 0, id);
+  setQueue(queue);
+  notify("Añadida para reproducir a continuación.");
+}
+
+function removeFromQueue(id) {
+  if (id === state.selectedTrack) return notify("La canción actual sigue en la cola.");
+  const queue = state.queue.length ? state.queue : playableQueue();
+  if (!queue.includes(id)) return notify("Esta canción no está en la cola.");
+  setQueue(queue.filter((item) => item !== id));
+  notify("Canción retirada de la cola.");
+}
+
+function moveQueue(id, target) {
+  const ids = [...(state.queue.length ? state.queue : playableQueue())];
+  const from = ids.indexOf(id);
+  if (from < 0 || target < 0 || target >= ids.length || target === from) return;
+  ids.splice(target, 0, ids.splice(from, 1)[0]);
+  setQueue(ids);
+  if (fullPlayer.open && !gesture) {
+    [...document.querySelectorAll("#queue [data-action]")].find((button) => button.dataset.id === id
+      && button.dataset.action === (target < from ? "queue-up" : "queue-down"))?.focus();
+  }
+}
+
+function renderQueue() {
+  if (!fullPlayer.open) return;
+  const ids = state.queue.length ? state.queue : playableQueue();
+  const list = document.querySelector("#queue");
+  const signature = JSON.stringify([state.selectedTrack, ids.map((id) => [id, tracks.find((track) => track.id === id)?.title])]);
+  if (list.dataset.signature === signature) return;
+  list.dataset.signature = signature;
+  list.innerHTML = ids.map((id, index) => {
+    const track = tracks.find((item) => item.id === id);
+    const current = id === state.selectedTrack;
+    return '<li class="queue-item" data-queue-id="' + id + '"' + (current ? ' aria-current="true"' : '') + '>'
+      + '<button class="queue-track" type="button" data-action="queue-play" data-id="' + id + '">' + escapeText(track?.title ?? "Canción no importada")
+      + '<small>' + (current ? "Actual · " : "") + escapeText(track?.artist ?? "Importa el archivo en este dispositivo") + '</small></button>'
+      + '<div class="queue-buttons"><span class="drag-handle" aria-hidden="true">⠿</span>'
+      + '<button class="icon-button" data-action="queue-up" data-id="' + id + '" aria-label="Subir" data-index="' + index + '"' + (index === 0 ? ' disabled' : '') + '>↑</button>'
+      + '<button class="icon-button" data-action="queue-down" data-id="' + id + '" aria-label="Bajar" data-index="' + index + '"' + (index === ids.length-1 ? ' disabled' : '') + '>↓</button>'
+      + '<button class="icon-button" data-action="queue-remove" data-id="' + id + '" aria-label="Quitar de la cola"' + (current ? ' disabled' : '') + '>' + icon("close") + '</button></div></li>';
+  }).join("");
+}
+
+function toggleShuffle() {
+  const queue = state.queue.length ? state.queue : playableQueue();
+  state.shuffle = !state.shuffle;
+  if (state.shuffle) {
+    state.queueOriginal = [...queue];
+    state.queue = [state.selectedTrack, ...shuffled(queue.filter((id) => id !== state.selectedTrack))];
+  } else state.queue = [...state.queueOriginal];
+  saveState();
+  updatePlayback();
+}
+
+function updateSleepLabel() {
+  const left = Math.ceil((state.sleepUntil - Date.now()) / 60000);
+  document.querySelector("#sleep").textContent = left > 0 ? "Apagar en " + left + " min" : "Temporizador";
+}
+
+function scheduleSleep() {
+  clearTimeout(sleepTimer);
+  if (state.sleepUntil) {
+    const left = state.sleepUntil - Date.now();
+    if (left <= 0) {
+      state.sleepUntil = 0;
+      if (startedAt !== null) toggleDemo();
+      audio.pause();
+      saveState();
+      notify("Reproducción pausada por el temporizador.");
+    } else sleepTimer = setTimeout(scheduleSleep, Math.min(left, 60000));
+  }
+  updateSleepLabel();
+}
+
+function sleepSettings() {
+  openDialog("Temporizador de apagado",
+    '<label class="form-label">Pausar después de<select name="minutes"><option value="15">15 minutos</option>'
+    + '<option value="30">30 minutos</option><option value="60">60 minutos</option><option value="90">90 minutos</option>'
+    + '<option value="0">Desactivar temporizador</option></select></label>',
+    "Guardar", (data) => {
+      const minutes = Number(data.get("minutes"));
+      state.sleepUntil = minutes ? Date.now() + minutes * 60000 : 0;
+      saveState(minutes ? "Temporizador activado." : "Temporizador desactivado.");
+      scheduleSleep();
+    });
+}
+
+function expandPlayer() {
+  if (!fullPlayer.open) fullPlayer.showModal();
+  updatePlayback();
+}
+
+function stopGesture() {
+  if (!gesture) return;
+  clearTimeout(gesture.hold);
+  gesture.row?.classList.remove("queue-dragging");
+  gesture = undefined;
+}
+
+function blockGestureClick(target) {
+  gestureClick = { target, until:performance.now() + 380 };
+}
+
+document.addEventListener("pointerdown", (event) => {
+  if (!event.isPrimary || event.button !== 0) return;
+  const card = event.target.closest("[data-track]");
+  const row = event.target.closest("[data-queue-id]");
+  const mini = event.target.closest(".playing-track");
+  const full = event.target.closest(".full-head, #full-disc");
+  if (!card && !row && !mini && !full) return;
+  if (row && event.target.closest(".queue-buttons button")) return;
+  stopGesture();
+  gesture = { pointer:event.pointerId, x:event.clientX, y:event.clientY, card, row, mini, full };
+  if (row && event.target.closest(".drag-handle")) {
+    event.target.setPointerCapture(event.pointerId);
+    gesture.hold = setTimeout(() => {
+      gesture.drag = true;
+      row.classList.add("queue-dragging");
+    }, 340);
+  } else if (card && !event.target.closest("[data-action='context']")) {
+    gesture.hold = setTimeout(() => {
+      blockGestureClick(card);
+      trackContext(card.dataset.track);
+      stopGesture();
+    }, 530);
+  }
+});
+
+document.addEventListener("pointermove", (event) => {
+  if (!gesture || gesture.pointer !== event.pointerId || gesture.drag) return;
+  if (Math.hypot(event.clientX - gesture.x, event.clientY - gesture.y) > 12) clearTimeout(gesture.hold);
+});
+
+document.addEventListener("pointerup", (event) => {
+  if (!gesture || gesture.pointer !== event.pointerId) return;
+  const { x, y, card, row, mini, full, drag } = gesture;
+  const dx = event.clientX - x;
+  const dy = event.clientY - y;
+  stopGesture();
+  if (drag) {
+    const target = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-queue-id]");
+    if (target) moveQueue(row.dataset.queueId, [...document.querySelectorAll("#queue li")].indexOf(target));
+  } else if (Math.abs(dx) > 56 && Math.abs(dx) > 1.4 * Math.abs(dy) && (card || row)) {
+    const id = card?.dataset.track ?? row.dataset.queueId;
+    if (dx > 0) enqueue(id);
+    else removeFromQueue(id);
+  } else if (Math.abs(dy) > 42 && Math.abs(dy) > Math.abs(dx) && (mini && dy < 0 || full && dy > 0)) {
+    if (mini) expandPlayer();
+    else fullPlayer.close();
+  } else return;
+  blockGestureClick(card ?? row ?? mini ?? full);
+});
+
+document.addEventListener("pointercancel", stopGesture);
+document.addEventListener("contextmenu", (event) => {
+  const card = event.target.closest("[data-track]");
+  if (!card) return;
+  event.preventDefault();
+  if (!dialog.open) trackContext(card.dataset.track);
+});
+
+function playing() {
+  return startedAt !== null || (audioTrackId === state.selectedTrack && !audio.paused && !audio.ended);
+}
+
+function playbackDuration() {
+  return audioTrackId === state.selectedTrack && Number.isFinite(audio.duration) && audio.duration > 0
+    ? audio.duration : selectedTrack().seconds;
+}
+
+function resetAudio() {
+  audioLoad++;
+  const old = audioUrl;
+  audioTrackId = audioUrl = undefined;
+  if (!old) return;
+  audio.pause();
+  audio.removeAttribute("src");
+  audio.load();
+  URL.revokeObjectURL(old);
+}
+
+async function loadAudio(id, position, autoplay) {
+  const request = ++audioLoad;
+  try {
+    const record = await musicStore.get(id);
+    if (request !== audioLoad) return;
+    if (!record?.blob) throw new Error("Importa esta canción en este dispositivo para escucharla.");
+    audioUrl = URL.createObjectURL(record.blob);
+    audioTrackId = id;
+    audio.src = audioUrl;
+    const target = Number.isFinite(seconds) ? seconds : position;
+    if (target > 0) audio.currentTime = Math.min(target, record.seconds);
+    if (autoplay) await startAudio();
+  } catch (error) {
+    if (request === audioLoad) notify(error.message || "No se pudo abrir la canción.");
+  }
+}
+
+async function startAudio() {
+  const version = audioLoad;
+  try {
+    if (audio.ended) audio.currentTime = 0;
+    await audio.play();
+  } catch (error) {
+    if (version === audioLoad && error.name !== "AbortError") notify("No se pudo iniciar el audio. Pulsa Reproducir para reintentar.");
+  }
+}
+
+function checkpoint(force = false) {
+  if (!libraryReady && state.selectedTrack.startsWith("local:")) return;
+  if (!force && Date.now() - lastCheckpoint < 2000) return;
+  lastCheckpoint = Date.now();
+  state.position = seconds;
+  saveState(undefined, false);
+}
+
+function seek(position) {
+  seconds = Math.min(playbackDuration(), Math.max(0, position));
+  if (audioTrackId === state.selectedTrack) audio.currentTime = seconds;
+  if (startedAt !== null) startedAt = performance.now() - seconds * 1000;
+  updateProgress();
+  scheduleProgress();
+  checkpoint(true);
+}
+
+async function refreshTracks() {
+  const local = await musicStore.list();
+  tracks = [...local, ...demos];
+  libraryReady = true;
+  render();
+}
+
+async function importMusic(files) {
+  let added = 0;
+  let duplicate = 0;
+  let rejected = 0;
+  let errorMessage = "";
+  for (const file of files) {
+    try {
+      if (await musicStore.importFile(file)) added++;
+      else duplicate++;
+    } catch (error) {
+      rejected++;
+      errorMessage = error.name === "QuotaExceededError" ? "Espacio insuficiente." : error.message;
+    }
+  }
+  await refreshTracks();
+  if (added && !selectedTrack().size) changeTrack(tracks.find((item) => item.size).id, false);
+  notify([added + " importadas", duplicate + " duplicadas", rejected + " rechazadas"].join(" · ")
+    + (errorMessage ? ". " + errorMessage : ""));
+}
+
+function readableBytes(bytes) {
+  if (!Number.isFinite(bytes)) return "No disponible";
+  const unit = ["B", "KB", "MB", "GB", "TB"];
+  const power = Math.min(unit.length - 1, Math.max(0, Math.floor(Math.log(Math.max(1, bytes)) / Math.log(1024))));
+  return (bytes / 1024 ** power).toLocaleString("es", { maximumFractionDigits: 1 }) + " " + unit[power];
+}
+
+async function storageDetails() {
+  const estimate = await navigator.storage?.estimate?.().catch(() => undefined);
+  const persistent = await navigator.storage?.persisted?.().catch(() => false);
+  const music = tracks.reduce((sum, track) => sum + (track.size ?? 0), 0);
+  const metadata = new Blob([JSON.stringify(state)]).size;
+  openDialog("Almacenamiento y respaldo",
+    '<div class="storage-stats"><p>Música <strong>' + readableBytes(music) + '</strong></p>'
+    + '<p>Datos y caché <strong>' + readableBytes(estimate ? Math.max(0, estimate.usage - music) + metadata : metadata) + '</strong></p>'
+    + '<p>Disponible estimado <strong>' + readableBytes(estimate ? Math.max(0, estimate.quota - estimate.usage) : undefined) + '</strong></p></div>'
+    + '<p>' + (persistent ? "Almacenamiento persistente concedido." : "El navegador administra el espacio disponible.") + '</p>'
+    + '<div class="tools storage-actions"><button type="button" class="secondary" data-action="persist">Solicitar persistencia</button>'
+    + '<button type="button" class="secondary" data-action="export">Exportar respaldo</button>'
+    + '<button type="button" class="secondary" data-action="restore">Restaurar respaldo</button></div>', "Listo", () => {});
+}
+
+async function exportMusic() {
+  checkpoint(true);
+  const blob = await musicStore.backup(state);
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "Mi-Musica-" + new Date().toISOString().slice(0, 10) + ".mimusica";
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+async function restoreMusic(file) {
+  const backup = await musicStore.readBackup(file);
+  const imported = normalizedState(backup.state);
+  await musicStore.restore(backup.records);
+  // Preserve both versions when an existing folder has independent edits.
+  for (const folder of imported.folders) {
+    const existing = state.folders.find((item) => item.id === folder.id);
+    if (!existing) state.folders.push(folder);
+    else if (JSON.stringify(existing) !== JSON.stringify(folder)) {
+      const copy = { ...folder, name: (folder.name.slice(0, 47) + " (respaldo)") };
+      if (!state.folders.some((item) => item.name === copy.name && item.color === copy.color
+        && JSON.stringify(item.tracks) === JSON.stringify(copy.tracks))) {
+        state.folders.push({ ...copy, id: crypto.randomUUID() });
+      }
+    }
+  }
+  state.order = imported.order;
+  state.favorites = trackIds([...state.favorites, ...imported.favorites]);
+  for (const key of ["queue", "queueOriginal", "history", "shuffle", "repeat"]) state[key] = imported[key];
+  await refreshTracks();
+  changeTrack(imported.selectedTrack, false);
+  seek(imported.position);
+  saveState("Respaldo restaurado.");
+}
+
+async function musicOperation(run) {
+  if (musicBusy) return notify("Hay una operación de música en curso.");
+  musicBusy = true;
+  try { await run(); }
+  catch (error) { notify(error.message || "No se pudo completar la operación."); }
+  finally { musicBusy = false; }
 }
 
 function openDialog(title, body, action, onSave, destructive = false) {
   document.querySelector("#dialog-title").textContent = title;
   fields.innerHTML = body;
   submit.textContent = action;
+  submit.hidden = !action;
   submit.className = destructive ? "danger" : "primary";
   pendingSave = onSave;
   if (!dialog.open) dialog.showModal();
@@ -312,7 +868,7 @@ function openDialog(title, body, action, onSave, destructive = false) {
 function editFolder(folder, initialTracks = []) {
   const selected = folder?.tracks ?? initialTracks;
   const options = tracks.map((track) => '<label class="check"><input type="checkbox" name="track" value="'
-    + track.id + '"' + (selected.includes(track.id) ? " checked" : "") + '> ' + track.title + '</label>').join("");
+    + track.id + '"' + (selected.includes(track.id) ? " checked" : "") + '> ' + escapeText(track.title) + '</label>').join("");
   openDialog(folder ? "Editar carpeta" : "Nueva carpeta",
     '<label class="form-label">Nombre <input class="field" name="name" required maxlength="60" value="' + escapeText(folder?.name ?? "") + '" data-focus></label>'
     + '<label class="form-label">Color <input class="field" name="color" type="color" value="' + (folder?.color ?? "#7596ff") + '"></label>'
@@ -325,7 +881,9 @@ function editFolder(folder, initialTracks = []) {
         form.elements.name.reportValidity();
         return false;
       }
-      const changes = { name, color: data.get("color"), tracks: data.getAll("track") };
+      const changes = { name, color: data.get("color"), tracks: trackIds([
+        ...data.getAll("track"), ...selected.filter((id) => !tracks.some((track) => track.id === id))
+      ]) };
       if (folder) Object.assign(folder, changes);
       else state.folders.push({ id: Date.now().toString(36) + "-" + Math.random().toString(36).slice(2), created: Date.now(), ...changes });
       saveState(folder ? "Carpeta actualizada." : "Carpeta creada.");
@@ -363,7 +921,87 @@ function assignTrack(trackId) {
     });
 }
 
+function trackContext(id) {
+  const track = tracks.find((item) => item.id === id);
+  if (!track) return;
+  const control = (action, label) => '<button type="button" class="secondary" data-action="' + action + '" data-id="' + id + '">' + label + '</button>';
+  openDialog(track.title, '<div class="track-actions">'
+    + control("enqueue", "Reproducir a continuación")
+    + control("favorite", state.favorites.includes(id) ? "Quitar de Me gusta" : "Añadir a Me gusta")
+    + control("assign", "Mover o guardar en carpetas")
+    + control("new-with-track", "Crear carpeta con esta canción")
+    + (state.folders.some((folder) => folder.id === folderId) ? control("remove-folder-track", "Quitar de esta carpeta") : "")
+    + (track.size ? control("metadata", "Editar título, artista y álbum") : "")
+    + '</div>', "", null);
+}
+
+function trackMetadata(id) {
+  const track = tracks.find((item) => item.id === id);
+  const label = (key, name) => '<label class="form-label">' + name + '<input class="field" name="' + key
+    + '" maxlength="200" value="' + escapeText(track[key] ?? "") + '"' + (key === "title" ? " required data-focus" : "") + '></label>';
+  openDialog("Editar información", label("title", "Título") + label("artist", "Artista") + label("album", "Álbum"), "Guardar cambios", (data) => {
+    const title = data.get("title").trim();
+    if (!title) return false;
+    musicOperation(async () => {
+      await musicStore.updateMetadata(id, { title, artist:data.get("artist").trim(), album:data.get("album").trim() });
+      await refreshTracks();
+      notify("Información actualizada.");
+    });
+  });
+}
+
+const cloudFields = ["folders", "favorites", "order", "queue", "queueOriginal", "shuffle", "repeat"];
+
+function readCloudData() {
+  return Object.fromEntries(cloudFields.map((key) => [key, structuredClone(state[key])]));
+}
+
+function applyCloudData(data) {
+  const sanitized = normalizedState({
+    ...state, ...data, folders: Array.isArray(data.folders) ? data.folders : state.folders
+  });
+  const candidate = { ...state };
+  for (const key of cloudFields) candidate[key] = sanitized[key];
+  localStorage.setItem(storageKey, JSON.stringify(candidate));
+  Object.assign(state, candidate);
+  if (folderId && folderId !== "@favorites" && !state.folders.some((folder) => folder.id === folderId)) folderId = null;
+  render();
+}
+
+function accountContents() {
+  const cloud = cloudMusic.view();
+  const control = (action, label) => '<button type="button" class="secondary" data-action="' + action + '">' + label + '</button>';
+  return '<div data-cloud-account><p role="status">' + escapeText(cloud.message) + '</p>'
+    + '<p>Las carpetas, los favoritos, la cola y algunas preferencias pueden sincronizarse. Los archivos de audio permanecen en este dispositivo.</p>'
+    + (cloud.user ? '<p class="account-name">' + escapeText(cloud.user.email ?? cloud.user.displayName ?? "Cuenta de Google") + '</p>' : '')
+    + (cloud.conflict ? '<h3>Cambios en ambos dispositivos</h3><ul>'
+      + cloud.conflict.conflicts.map((item) => '<li>' + escapeText(item) + '</li>').join("")
+      + '</ul><p>Elige qué versión mantener para estos cambios. Los cambios compatibles se combinan.</p>' : '')
+    + '<div class="tools storage-actions">'
+    + (!cloud.configured ? "" : cloud.conflict ? control("cloud-local", "Mantener estos cambios")
+      + control("cloud-remote", "Usar cambios de la nube")
+      : cloud.user ? (cloud.enabled ? control("cloud-now", "Sincronizar ahora") : control("cloud-enable", "Sincronizar esta biblioteca"))
+      : control("cloud-login", cloud.ready ? "Iniciar sesión con Google" : "Cargar inicio de sesión"))
+    + (cloud.user ? control("cloud-logout", "Cerrar sesión") : "") + '</div></div>';
+}
+
+document.addEventListener("music-cloud-status", () => {
+  const cloud = cloudMusic.view();
+  const account = document.querySelector(".account-button");
+  account.classList.toggle("account-conflict", Boolean(cloud.conflict));
+  account.setAttribute("aria-label", cloud.conflict ? "Cuenta · Conflictos de sincronización" : "Cuenta");
+  if (!dialog.open || !fields.querySelector("[data-cloud-account]")) return;
+  const action = document.activeElement?.dataset.action;
+  fields.innerHTML = accountContents();
+  if (action) [...fields.querySelectorAll("button")].find((button) => button.dataset.action === action)?.focus();
+});
+
 document.addEventListener("click", (event) => {
+  if (event.detail && gestureClick?.target.contains(event.target) && performance.now() < gestureClick.until) {
+    gestureClick = undefined;
+    event.preventDefault();
+    return;
+  }
   const libraryTab = event.target.closest('[data-page="biblioteca"]');
   if (libraryTab && page() === "biblioteca" && folderId !== null) {
     event.preventDefault();
@@ -375,12 +1013,63 @@ document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-action]");
   if (!button) return;
   const { action, id } = button.dataset;
+  if (action.startsWith("cloud-")) {
+    cloudMusic.action(action);
+    return;
+  }
   const folder = state.folders.find((item) => item.id === id);
   switch (action) {
-    case "demo":
-      if (id === state.selectedTrack) toggleDemo();
+    case "account":
+      openDialog("Cuenta y sincronización", accountContents(), "Listo", () => {});
+      cloudMusic.connect().catch(() => {});
+      break;
+    case "compare": compareTrack(button.dataset.provider, Number(button.dataset.index)); break;
+    case "expand": expandPlayer(); break;
+    case "collapse": fullPlayer.close(); break;
+    case "play": toggleDemo(); break;
+    case "previous": previousTrack(); break;
+    case "next": nextTrack(); break;
+    case "shuffle": toggleShuffle(); break;
+    case "sleep": sleepSettings(); break;
+    case "queue-up": moveQueue(id, Number(button.dataset.index) - 1); break;
+    case "queue-down": moveQueue(id, Number(button.dataset.index) + 1); break;
+    case "queue-remove": removeFromQueue(id); break;
+    case "queue-play":
+      if (!tracks.some((item) => item.id === id)) notify("Importa esta canción para escucharla en este dispositivo.");
+      else if (id === state.selectedTrack) toggleDemo();
       else changeTrack(id, true);
       break;
+    case "context": trackContext(id); break;
+    case "metadata": trackMetadata(id); break;
+    case "new-with-track": editFolder(undefined, [id]); break;
+    case "enqueue": if (dialog.open) dialog.close(); enqueue(id); break;
+    case "favorite":
+      state.favorites = state.favorites.includes(id) ? state.favorites.filter((item) => item !== id) : [...state.favorites, id];
+      saveState(state.favorites.includes(id) ? "Añadida a Me gusta." : "Retirada de Me gusta.");
+      dialog.close();
+      render();
+      break;
+    case "favorites": folderId = "@favorites"; render(); window.scrollTo(0, 0); break;
+    case "remove-folder-track": {
+      const current = state.folders.find((item) => item.id === folderId);
+      if (current) current.tracks = current.tracks.filter((item) => item !== id);
+      saveState("Canción retirada de esta carpeta.");
+      dialog.close();
+      render();
+      break;
+    }
+    case "import": document.querySelector("#audio-files").click(); break;
+    case "storage": musicOperation(storageDetails); break;
+    case "export": musicOperation(exportMusic); break;
+    case "restore": document.querySelector("#backup-file").click(); break;
+    case "persist":
+      musicOperation(async () => {
+        const granted = await navigator.storage?.persist?.();
+        notify(granted ? "Almacenamiento persistente concedido." : "El navegador no concedió almacenamiento persistente.");
+        await storageDetails();
+      });
+      break;
+    case "demo": playCard(id, button); break;
     case "folder":
       folderId = id;
       if (page() === "biblioteca") {
@@ -401,6 +1090,11 @@ document.addEventListener("click", (event) => {
 });
 
 document.addEventListener("change", (event) => {
+  if (event.target.id === "repeat") {
+    state.repeat = event.target.value;
+    saveState();
+    return;
+  }
   if (event.target.id !== "folder-order") return;
   state.order = event.target.value;
   saveState();
@@ -412,7 +1106,14 @@ document.addEventListener("submit", (event) => {
   if (event.target.id !== "search-form") return;
   event.preventDefault();
   query = document.querySelector("#query").value.trim();
-  renderResults();
+  searchField = document.querySelector("#search-field").value;
+  searchCountry = document.querySelector("#search-country").value.toUpperCase();
+  externalEnabled = document.querySelector("#search-online").checked;
+  externalSearch();
+});
+
+dialog.addEventListener("close", () => {
+  if (compareRequest && !dialog.open) compareRequest.abort();
 });
 
 form.addEventListener("input", (event) => {
@@ -433,25 +1134,58 @@ window.addEventListener("hashchange", () => {
 });
 
 play.addEventListener("click", toggleDemo);
-document.querySelector("#next").addEventListener("click", nextTrack);
-timeline.addEventListener("input", () => {
-  seconds = Number(timeline.value);
-  if (startedAt !== null) startedAt = performance.now() - seconds * 1000;
-  if (startedAt !== null && seconds >= selectedTrack().seconds) syncProgress();
-  else {
-    updateProgress();
-    scheduleProgress();
-  }
+document.querySelector("#next").addEventListener("click", () => nextTrack());
+timeline.addEventListener("input", () => seek(Number(timeline.value)));
+fullTimeline.addEventListener("input", () => seek(Number(fullTimeline.value)));
+
+for (const type of ["loadedmetadata", "timeupdate", "seeked", "play", "pause", "ended", "error"]) {
+  audio.addEventListener(type, () => {
+    if (audioTrackId !== state.selectedTrack) return;
+    seconds = audio.currentTime;
+    if (type === "timeupdate") updateProgress();
+    else updatePlayback();
+    if (type !== "loadedmetadata") checkpoint(type !== "timeupdate");
+    if (type === "error") notify("El navegador no pudo reproducir esta canción.");
+    if (type === "ended") nextTrack(true);
+  });
+}
+
+document.querySelector("#audio-files").addEventListener("change", (event) => {
+  const files = [...event.target.files];
+  event.target.value = "";
+  if (files.length) musicOperation(() => importMusic(files));
+});
+
+document.querySelector("#backup-file").addEventListener("change", (event) => {
+  const [file] = event.target.files;
+  event.target.value = "";
+  if (file) openDialog("Restaurar respaldo",
+    "<p>Se añadirán las canciones y carpetas del respaldo. Se conservarán las carpetas locales y se recuperarán las preferencias del respaldo.</p>",
+    "Restaurar", () => { musicOperation(() => restoreMusic(file)); });
 });
 
 document.addEventListener("visibilitychange", () => {
   document.documentElement.classList.toggle("page-hidden", document.hidden);
-  if (document.hidden) clearTimeout(progressTimer);
-  else syncProgress();
+  if (document.hidden) {
+    clearTimeout(progressTimer);
+    checkpoint(true);
+  }
+  else {
+    scheduleSleep();
+    syncProgress();
+  }
 });
+
+window.addEventListener("pagehide", () => checkpoint(true));
+cloudMusic.init(readCloudData, applyCloudData);
+scheduleSleep();
 
 for (const target of document.querySelectorAll("[data-icon]")) target.innerHTML = icon(target.dataset.icon);
 render();
+refreshTracks().then(() => {
+  if (selectedTrack().size) loadAudio(state.selectedTrack, seconds, false);
+  else if (state.selectedTrack !== selectedTrack().id) notify("La última canción no está almacenada en este dispositivo.");
+}).catch(() => notify("El almacenamiento de audio no está disponible en este navegador."));
 
 if (location.protocol !== "file:" && window.isSecureContext && "serviceWorker" in navigator) {
   window.addEventListener("load", () => {

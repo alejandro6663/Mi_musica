@@ -1,7 +1,7 @@
 {
   "name": "Mi Música",
   "short_name": "Mi Música",
-  "description": "Biblioteca musical con una demostración visual de vinilos.",
+  "description": "Biblioteca de música local con vinilos y reproducción sin conexión.",
   "lang": "es",
   "start_url": "./",
   "scope": "./",

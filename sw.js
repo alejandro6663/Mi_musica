@@ -2,7 +2,7 @@
 
 const scope = new URL(self.registration.scope);
 const cachePrefix = "mi-musica:" + scope.pathname + ":";
-const cacheName = cachePrefix + "1.1.1";
+const cacheName = cachePrefix + "1.2.1";
 const entry = new URL("index.html", scope).href;
 const mobileArt = new URL("vinilo-movil.webp", scope).href;
 const desktopArt = new URL("vinilo-escritorio.webp", scope).href;
@@ -10,6 +10,11 @@ const core = [
   entry,
   new URL("estilos.css", scope).href,
   new URL("app.js", scope).href,
+  new URL("media.js", scope).href,
+  new URL("cloud-config.js", scope).href,
+  new URL("cloud-merge.js", scope).href,
+  new URL("cloud-sync.js", scope).href,
+  new URL("catalog.js", scope).href,
   new URL("manifest.webmanifest", scope).href,
   new URL("iconos/mi-musica-192.png", scope).href,
   mobileArt

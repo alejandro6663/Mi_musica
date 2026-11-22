@@ -4,33 +4,43 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#080d1c">
-  <meta name="description" content="Organiza tu colección musical y explora una demo visual con vinilos.">
+  <meta name="description" content="Importa, escucha y organiza tu colección musical en Mi Música.">
   <title>Mi Música</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" type="image/png" sizes="192x192" href="iconos/mi-musica-192.png">
   <link rel="stylesheet" href="estilos.css">
+  <script src="media.js" defer></script>
+  <script src="cloud-config.js" defer></script>
+  <script src="cloud-merge.js" defer></script>
+  <script src="cloud-sync.js" defer></script>
+  <script src="catalog.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>
   <header class="topbar">
     <div class="wrap top-inner">
       <a class="brand" href="#inicio" aria-label="Mi Música, Inicio"><span class="brand-icon" data-icon="wave"></span>Mi<span>Música</span></a>
-      <span class="version"><i></i> Prototipo v1.1</span>
+      <div class="top-actions"><span class="version"><i></i> Versión 1.2</span>
+        <button type="button" class="secondary account-button" data-action="account">Cuenta</button></div>
     </div>
   </header>
   <main class="wrap" id="contenido"></main>
+  <audio id="audio" preload="metadata"></audio>
+  <input id="audio-files" type="file" multiple accept="audio/*,.mp3,.m4a,.aac,.flac,.opus,.ogg,.oga,.wav,.webm" hidden>
+  <input id="backup-file" type="file" accept=".mimusica" hidden>
   <footer class="dock">
     <div class="wrap player">
-      <div class="playing-track">
-        <div id="mini-disc"></div>
-        <div class="now"><strong id="track-title"></strong><span>Demo visual · Sin audio</span></div>
-      </div>
+      <button type="button" class="playing-track" data-action="expand" aria-label="Abrir reproductor completo">
+        <span id="mini-disc"></span>
+        <span class="now"><strong id="track-title"></strong><span id="track-caption"></span></span>
+      </button>
       <div class="progress">
         <span id="elapsed" aria-hidden="true">0:00</span>
-        <input id="timeline" type="range" min="0" max="1" value="0" aria-label="Progreso de la demo visual">
+        <input id="timeline" type="range" min="0" max="1" value="0" aria-label="Posición de reproducción">
         <span id="duration" aria-hidden="true"></span>
       </div>
       <div class="transport">
+        <button class="icon-button mini-previous" id="previous" data-action="previous" data-icon="previous" aria-label="Canción anterior"></button>
         <button class="play" id="play" aria-label="Iniciar demo visual"></button>
         <button class="icon-button" id="next" data-icon="next" aria-label="Siguiente canción"></button>
       </div>
@@ -42,6 +52,40 @@
       <a href="#dj" data-page="dj"><span data-icon="headphones"></span>DJ personal</a>
     </nav>
   </footer>
+  <dialog id="full-player" aria-labelledby="full-title">
+    <div class="full-scroll">
+      <header class="full-head">
+        <button class="secondary collapse" data-action="collapse" type="button">Minimizar</button>
+        <span>Reproducción</span>
+      </header>
+      <div id="full-disc"></div>
+      <h2 id="full-title"></h2>
+      <p id="full-artist"></p>
+      <div class="progress full-progress">
+        <span id="full-elapsed" aria-hidden="true">0:00</span>
+        <input id="full-timeline" type="range" min="0" max="1" value="0" aria-label="Posición en reproductor completo">
+        <span id="full-duration" aria-hidden="true"></span>
+      </div>
+      <div class="transport full-transport">
+        <button class="icon-button" data-action="previous" data-icon="previous" aria-label="Anterior"></button>
+        <button class="play" id="full-play" data-action="play" aria-label="Reproducir"></button>
+        <button class="icon-button" data-action="next" data-icon="next" aria-label="Siguiente"></button>
+      </div>
+      <div class="player-settings">
+        <button class="secondary" id="shuffle" data-action="shuffle" type="button" aria-pressed="false">Aleatorio</button>
+        <label class="repeat-setting">Repetición
+          <select id="repeat" aria-label="Repetición">
+            <option value="off">Desactivada</option><option value="list">Lista o carpeta</option><option value="one">Canción</option>
+          </select>
+        </label>
+        <button class="secondary" id="sleep" data-action="sleep" type="button">Temporizador</button>
+      </div>
+      <section class="queue-panel">
+        <div class="section-head"><h2>Cola de reproducción</h2></div>
+        <ol id="queue" aria-label="Cola de reproducción"></ol>
+      </section>
+    </div>
+  </dialog>
   <dialog id="dialog" aria-labelledby="dialog-title">
     <form id="dialog-form">
       <div class="dialog-head">
