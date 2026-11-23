@@ -243,3 +243,13 @@ button:disabled { cursor:default; opacity:.58; }
   #full-disc .vinyl { animation: none; }
 }
 
+
+/* ABC: capa de entrada. Mientras se ve ABC, la interfaz de Mi Música queda oculta (el audio sigue sonando). */
+body.abc-activo > .topbar, body.abc-activo > main, body.abc-activo > .dock { display: none; }
+body.abc-cliente > #status { display: none; }
+#abc-root[hidden] { display: none; }
+.abc-back { display: inline-flex; align-items: center; flex: none; white-space: nowrap; min-height: 36px; margin-right: 12px; padding: 4px 12px; border-radius: 10px; border: 1px solid #293957; background: #151f37; color: #dce6ff; font-size: .85rem; font-weight: 700; }
+.abc-back:hover { background: #1e2c4b; }
+.top-inner .brand { margin-right: auto; }
+@media (max-width: 420px) { .abc-back { min-height: 32px; padding: 3px 8px; margin-right: 8px; font-size: .78rem; } .top-inner .brand { font-size: 1.15rem; } .top-inner .brand-icon { width: 30px; height: 30px; margin-right: 8px; } }
+@media (max-width: 380px) { .top-actions .version { display: none; } }
