@@ -46,3 +46,12 @@ En la 1.2, cuando existía una biblioteca bajo `mi-musica-v2`, la app cargaba es
 
 Conserva el ZIP de la 1.2 y respalda el repositorio desplegado antes de publicar. Mantén el mismo hostname, ruta, manifiesto y archivo del service worker para conservar instalación y datos. Conserva el `cloud-config.js` de producción si ya configuraste Firebase. Despliega los archivos juntos y cierra las ventanas anteriores para que se active la caché nueva. Comprueba primero la recuperación y las funciones en un origen de prueba. La entrega deja GitHub Pages y la versión 1.2 publicada intactos.
 
+
+## ABC – Abastecimiento (fase 1, rama `abc-fase-1`)
+
+La app abre ahora en `#abc`, la portada de ABC. Mi Música es una carpeta más y abre `#inicio` dentro de la misma app. Los archivos de ABC están en `abc/` y cada sección se descarga solo cuando se abre. No se cambiaron `app.js`, las claves `mi-musica-v2` y `mi-musica-v1`, IndexedDB, `manifest.webmanifest` ni `firestore.rules`.
+
+- **Administrador:** rellena `adminUid` en `abc/abc-config.js` con tu User UID de Firebase. También debe estar configurado `cloud-config.js`. Mientras falte alguno de los dos, ABC funciona en **modo configuración** y muestra la portada completa.
+- **Cliente:** `#tienda/ferreteria` muestra solo la tienda y el pie legal.
+- **Legal:** `#legal`, `#legal/datos`, `#legal/privacidad` y `#legal/terminos` son borradores. Los datos del responsable se publican en `abc/abc-config.js`. La casilla de autorización se usa con `abcLegal.consent(formulario, { purpose: "…" })`.
+- **Seguridad:** la separación entre administrador y cliente es solo visual. Los datos reales deberán protegerse con reglas de Firestore.
